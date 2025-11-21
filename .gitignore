@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ROS
+piper_ros/build/
+piper_ros/devel/
+piper_ros/.catkin_workspace
+piper_ros/install/
+
+# 运行时生成的文件
+
+
+# 模型文件（太大，应该单独下载）
+
+
+# 临时文件
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.sublime-*
+
+# 系统文件
+Thumbs.db
+.directory
+
+# Matplotlib 缓存
+/tmp/matplotlib-cache/
+
+# 测试输出
+test_output/
+debug_images/

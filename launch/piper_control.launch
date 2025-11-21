@@ -1,0 +1,13 @@
+<launch>
+  <!-- <arg name="rviz_config" default="/home/ubuntu/arm_student_ws/project2/config/piper_ctrl.rviz" /> -->
+  <arg name="rviz_config" default="/home/robot/button/V4.0/project2/config/piper_ctrl.rviz" />
+  <param
+    name="robot_description"
+    textfile="/home/robot/button/V4.0/project2/config/piper_description.urdf" />
+
+  <node
+    name="rviz"
+    pkg="rviz"
+    type="rviz"
+    args="-d $(arg rviz_config)" />
+</launch>

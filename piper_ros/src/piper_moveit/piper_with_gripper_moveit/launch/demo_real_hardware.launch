@@ -1,0 +1,54 @@
+<launch>
+  <!-- 
+    真实硬件模式的 MoveIt 启动文件
+    假设 robot_description 已经由外部（piper_control.launch）加载
+    不启动 robot_state_publisher（避免冲突）
+  -->
+
+  <!-- 规划管道 -->
+  <arg name="pipeline" default="ompl" />
+
+  <!-- 不启动数据库 -->
+  <arg name="db" default="false" />
+  
+  <!-- 调试模式 -->
+  <arg name="debug" default="false" />
+
+  <!-- 不加载 robot_description（由 piper_control.launch 加载） -->
+  <arg name="load_robot_description" default="false"/>
+
+  <!-- 使用 fake 控制器（因为真实控制通过SDK） -->
+  <arg name="moveit_controller_manager" default="fake" />
+  <arg name="fake_execution_type" default="interpolate" />
+
+  <!-- 是否启动 RViz -->
+  <arg name="use_rviz" default="false" />
+
+  <!-- 
+    注意：不启动 joint_state_publisher 和 robot_state_publisher
+    因为 piper_control.launch 已经启动了 robot_state_publisher
+    joint_states 由硬件驱动提供
+  -->
+
+  <!-- 启动 MoveIt move_group 节点 -->
+  <include file="$(find piper_with_gripper_moveit)/launch/move_group.launch">
+    <arg name="allow_trajectory_execution" value="true"/>
+    <arg name="moveit_controller_manager" value="$(arg moveit_controller_manager)" />
+    <arg name="fake_execution_type" value="$(arg fake_execution_type)"/>
+    <arg name="info" value="true"/>
+    <arg name="debug" value="$(arg debug)"/>
+    <arg name="pipeline" value="$(arg pipeline)"/>
+    <arg name="load_robot_description" value="$(arg load_robot_description)"/>
+  </include>
+
+  <!-- 可选：启动 RViz -->
+  <include file="$(find piper_with_gripper_moveit)/launch/moveit_rviz.launch" if="$(arg use_rviz)">
+    <arg name="rviz_config" value="$(find piper_with_gripper_moveit)/launch/moveit.rviz"/>
+    <arg name="debug" value="$(arg debug)"/>
+  </include>
+
+  <!-- 启动 joint_moveit_ctrl_server -->
+  <node name="joint_moveit_ctrl_server" pkg="moveit_ctrl" type="joint_moveit_ctrl_server.py"
+        output="screen" launch-prefix="python3"/>
+
+</launch>
