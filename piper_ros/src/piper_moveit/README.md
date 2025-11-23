@@ -1,226 +1,151 @@
-# Piper_Moveit
+# Piper_Moveit2
 
 [EN](README(EN).md)
 
-![ubuntu](https://img.shields.io/badge/Ubuntu-20.04-orange.svg)
+![ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange.svg)
 
-|ROS |STATE|
+|PYTHON |STATE|
 |---|---|
-|![ros](https://img.shields.io/badge/ROS-noetic-blue.svg)|![Pass](https://img.shields.io/badge/Pass-blue.svg)|
+|![humble](https://img.shields.io/badge/ros-humble-blue.svg)|![Pass](https://img.shields.io/badge/Pass-blue.svg)|
 
-## 1 安装Moveit环境
+> 注：安装使用过程中出现问题可查看第5部分
 
-> 注:moveit 1.1.11包含在src中，无需单独下载，只是包moveit-1.1.11路径下存放了CATKIN_IGNORE文件，默认不会编译它
-> 如果解决moveit的编译问题太多，可以直接通过`sudo apt install ros-$ROS_DISTRO-moveit`来安装官方源的moeit
+## 1 安装Moveit2
 
-源安装需要 wstool,catkin_tools:
+1）二进制安装，[参考链接](https://moveit.ai/install-moveit2/binary/)
 
 ```bash
-sudo apt install python3-wstool python3-catkin-tools python3-rosdep
+sudo apt install ros-humble-moveit*
 ```
 
-## 2 使用方法
+2）源码编译方法，[参考链接](https://moveit.ai/install-moveit2/source/)
 
-### 2.1 运行moveit
+## 2 使用环境
 
-进入工作空间
+安装完Moveit2之后，需要安装一些依赖
+
+```bash
+sudo apt-get install ros-humble-control* ros-humble-joint-trajectory-controller ros-humble-joint-state-* ros-humble-gripper-controllers ros-humble-trajectory-msgs
+```
+
+若系统语言区域设置不为英文区域，须设置
+
+```bash
+echo "export LC_NUMERIC=en_US.UTF-8" >> ~/.bashrc
+source ~/.bashrc
+```
+
+## 3 moveit控制真实机械臂
+
+### 3.1 开启piper_ros
+
+按照[piper_ros](../../README.MD#1-安装方法)配置完后
 
 ```bash
 cd ~/piper_ros
-source devel/setup.bash
+source install/setup.bash
+bash can_activate.sh can0 1000000
 ```
 
-#### 2.1.1 运行(有夹爪)
-
-开启ros控制节点(夹爪控制值二倍)
+开启控制节点
 
 ```bash
-roslaunch piper start_single_piper.launch gripper_val_mutiple:=2
+ros2 launch piper start_single_piper.launch.py gripper_val_mutiple:=2
 ```
 
->出现使能成功即可
+### 3.2 moveit2控制
 
-运行moveit
+开启moveit2
 
 ```bash
-roslaunch piper_with_gripper_moveit demo.launch
+cd ~/piper_ros
+conda deactivate # 若无conda环境可去除此行
+source install/setup.bash
 ```
 
-若希望不启动rviz,运行
+#### 3.2.1 无夹爪运行
 
 ```bash
-roslaunch piper_with_gripper_moveit demo.launch use_rviz:=false
+ros2 launch piper_no_gripper_moveit demo.launch.py
 ```
 
->夹爪模式分为两个控制组:
->
->- **机械臂控制组** 包含关节 joint1 至 joint6
->- **夹爪控制组** 包含关节 joint7 和 joint8, 夹爪控制组采用 joint7 进行主动控制,而 joint8 为被动控制
->- **piper控制组** 包含关节 joint1 和 joint6, joint7为夹爪控制
-> 夹爪控制值范围为0到0.035, 单位为m, 对应到实际夹爪张合距离需乘2,即0到0.07
-
-|joint_name|     limit(rad)     |    limit(angle)    |     limit(rad/s)   |   limit(rad/s^2)   |
-|----------|     ----------     |     ----------     |     ----------     |     ----------     |
-|joint1    |   [-2.618, 2.618]  |    [-150.0, 150.0] |      [0, 3.0]      |      [0, 5.0]      |
-|joint2    |   [0, 3.14]        |    [0, 180.0]      |      [0, 3.0]      |      [0, 5.0]      |
-|joint3    |   [-2.967, 0]      |    [-170, 0]       |      [0, 3.0]      |      [0, 5.0]      |
-|joint4    |   [-1.745, 1.745]  |    [-100.0, 100.0] |      [0, 3.0]      |      [0, 5.0]      |
-|joint5    |   [-1.22, 1.22]    |    [-70.0, 70.0]   |      [0, 3.0]      |      [0, 5.0]      |
-|joint6    |   [-2.0944, 2.0944]|    [-120.0, 120.0] |      [0, 3.0]      |      [0, 5.0]      |
-
-控制信息节点为/joint_states
+#### 3.2.2 有夹爪运行
 
 ```bash
-rostopic echo /joint_states
+ros2 launch piper_with_gripper_moveit demo.launch.py
 ```
-
->- 其中前6个值为机械臂位置控制
->- 第7个值为夹爪位置控制
->- 第8个值为0不参与控制
-
-#### 2.1.2 运行(无夹爪)
-
-开启ros控制节点(夹爪控制值二倍)
-
-```bash
-roslaunch piper start_single_piper.launch gripper_val_mutiple:=2
-```
-
->出现使能成功即可
-
-```bash
-roslaunch piper_no_gripper_moveit demo.launch
-```
-
-若希望不启动rviz,运行
-
-```bash
-roslaunch piper_no_gripper_moveit demo.launch use_rviz:=false
-```
-
-### 2.2 规划轨迹并运动
-
-#### 2.2.1 拖动示教
 
 ![piper_moveit](../../asserts/pictures/piper_moveit.png)
 
+可以直接拖动机械臂末端的箭头控制机械臂
+
 调整好位置后点击左侧MotionPlanning中Planning的Plan&Execute即可开始规划并运动
 
-#### 2.2.2 服务端控制(关节弧度控制)
+## 4 moveit控制仿真机械臂
 
-控制机械臂 (终端输入)
+### 4.1 gazebo
 
-```bash
-cd piper_ros
-source devel/setup.bash
-```
+#### 4.1.1 运行gazebo
 
-机械臂关节弧度控制
+见 [piper_gazebo](../piper_sim/README.md#1-gazebo仿真)
 
-```bash
-rosservice call /joint_moveit_ctrl_arm "joint_states: [0.2,0.2,-0.2,0.3,-0.2,0.5]
-max_velocity: 0.5
-max_acceleration: 0.5" 
-
-```
-
-机械臂末端位置控制
+#### 5.1.2 moveit控制
 
 ```bash
-rosservice call /joint_moveit_ctrl_endpose "joint_endpose: [0.099091, 0.008422, 0.246447, -0.09079689034052749, 0.7663049838381912, -0.02157924359457128, 0.6356625934370577]
-max_velocity: 0.5
-max_acceleration: 0.5" 
-
+cd ~/piper_ros
+source install/setup.bash
 ```
 
-控制夹爪 (终端输入)
+注: **下面的launch不是控制真实机械臂的demo.launch.py,且需要在gazebo之后运行,否则会没有机械臂模型**
+
+有夹爪运行
 
 ```bash
-rosservice call /joint_moveit_ctrl_gripper "gripper: 0.035
-max_velocity: 0.5
-max_acceleration: 0.5" 
+ros2 launch piper_with_gripper_moveit piper_moveit.launch.py
 ```
 
-控制机械臂和夹爪联合运动
+无夹爪运行
 
 ```bash
-rosservice call /joint_moveit_ctrl_piper "joint_states: [0.2,0.2,-0.2,0.3,-0.2,0.5]
-gripper: 0.035
-max_velocity: 0.5
-max_acceleration: 0.5" 
+ros2 launch piper_no_gripper_moveit piper_moveit.launch.py
 ```
 
-#### 2.2.3 客户端控制 (终端输入)
+### 5.2 mujoco
+
+#### 5.2.1 moveit控制（先运行moveit）
+
+同 [3.2 moveit2控制](#32-moveit2控制)
+
+#### 5.2.2 运行mujoco
+
+见 [piper_mujoco](../piper_sim/README.md#2-mujoco仿真)
+
+注：**关闭可以使用ctrl+C+\\**
+
+## 5 可能遇见的问题
+
+### 5.1 打开gazebo时报错，提示urdf未加载，导致仿真环境中机械臂末端与底座穿模
+
+1 注意编译后的install下piper_description中是否有config，且config中是否包含src/piper/piper_description中config的文件
+
+install中缺少urdf同理
+
+2 注意src/piper/piper_description/urdf/piper_description_gazebo.xacro中644行的路径是否正确，如确认后问题依然存在，将路径改为绝对路径
+
+### 5.2 运行demo.launch.py时报错
+
+报错：参数需要一个double，而提供的是一个string
+解决办法：
+终端运行
 
 ```bash
-cd piper_ros
-source devel/setup.bash
-rosrun moveit_ctrl joint_moveit_ctrl.py
+echo "export LC_NUMERIC=en_US.UTF-8" >> ~/.bashrc
+source ~/.bashrc
 ```
 
-> 速度和加速度使用百分比控速,范围为(0-1),默认为0.5,机械臂最大速度为3(rad/s).可在[joint_moveit_ctrl](../piper_moveit/moveit_ctrl/scripts/joint_moveit_ctrl.py)中的控制函数中的max_velocity=0.5, max_acceleration=0.5参数更改
-> 更改 [joint_moveit_ctrl](../piper_moveit/moveit_ctrl/scripts/joint_moveit_ctrl.py)中的 arm_position, gripper_position 控制关节运动,单位为弧度
+或在运行launch前加上LC_NUMERIC=en_US.UTF-8
+例如
 
-#### 2.2.4 moveit类控制 (关节弧度控制)
-
-> 此部分可加在 [joint_moveit_ctrl](../piper_moveit/moveit_ctrl/scripts/joint_moveit_ctrl.py) 中应用
-
-```python
-#!/usr/bin/env python3
-
-import rospy
-import moveit_commander
-
-def move_robot():
-    # 初始化 MoveIt! 相关组件
-    moveit_commander.roscpp_initialize([])
-    move_group = moveit_commander.MoveGroupCommander("gripper")  # 可以根据需要修改为 "arm"、"gripper"或"piper"
-
-    # 获取当前关节值
-    joint_goal = move_group.get_current_joint_values()
-    joint_goal[0] = 0.0  # arm使用joint_goal长度为6,gripper使用joint_goal长度为1,piper使用joint_goal长度为7
-    # joint_goal[1] = 0.0
-    # joint_goal[2] = 0.0
-    # joint_goal[3] = 0.0
-    # joint_goal[4] = 0.0
-    # joint_goal[5] = 0.0
-    # joint_goal[6] = 0.0 # 使用piper规划组是，这一位是夹爪控制
-
-    # 设置并执行目标
-    move_group.set_joint_value_target(joint_goal)
-    success = move_group.go(wait=True)
-    rospy.loginfo(f"Movement success: {success}")
-    rospy.loginfo(f"joint_value: {move_group.get_current_joint_values()}")
-
-    moveit_commander.roscpp_shutdown()
-
-if __name__ == "__main__":
-    try:
-        move_robot()
-    except rospy.ROSInterruptException:
-        pass
+```bash
+LC_NUMERIC=en_US.UTF-8 ros2 launch piper_moveit_config demo.launch.py
 ```
-
-## 3 moveit控制仿真机械臂
-
-注：**有无夹爪版本需要对应**
-
-### 3.1 gazebo
-
-#### 3.1.1 运行gazebo
-
-见 [piper_gazebo](../piper_sim/README.md#21-gazebo仿真)
-
-#### 4.1.2 moveit控制
-
-同 [2.2 运行moveit](#22-运行moveit)
-
-### 4.2 mujoco
-
-#### 4.2.1 运行mujoco
-
-见 [piper_mujoco](../piper_sim/README.md#22-mujoco仿真)
-
-#### 4.2.2 moveit控制
-
-同 [2.2 运行moveit](#22-运行moveit)

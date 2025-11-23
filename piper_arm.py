@@ -176,6 +176,101 @@ class PiperArm:
         print("no feasible solution")
         return False
 
+    
+    def inverse_kinematics_refined(self, T_target, initial_guess=None, max_iterations=100, tolerance=1e-6):
+        """
+        高精度逆运动学求解：在解析解基础上进行数值优化
+        
+        参数:
+            T_target: 4x4目标位姿矩阵
+            initial_guess: 初始关节角度猜测（如果None，则使用解析解）
+            max_iterations: 最大迭代次数
+            tolerance: 位置容差（米）
+        
+        返回:
+            优化后的关节角度列表，或None（失败时）
+        """
+        from scipy.optimize import least_squares
+        
+        # 1. 获取初始解（解析解或用户提供）
+        if initial_guess is None:
+            initial_guess = self.inverse_kinematics(T_target)
+            if initial_guess is False or initial_guess is None:
+                # 解析解失败，无法优化
+                return None
+        
+        # 2. 定义误差函数（位置+姿态）
+        def error_function(q):
+            T_current = self.forward_kinematics(q.tolist())
+            
+            # 位置误差（3维）
+            pos_error = T_current[:3, 3] - T_target[:3, 3]
+            
+            # 姿态误差（使用旋转矩阵的差异，转换为3维向量）
+            R_current = T_current[:3, :3]
+            R_target = T_target[:3, :3]
+            R_error = R_current.T @ R_target  # 相对旋转
+            
+            # 将旋转误差转换为轴角表示（更适合优化）
+            # 使用Rodriguez公式的逆
+            trace = np.trace(R_error)
+            if trace >= 3.0 - 1e-6:  # 几乎无旋转误差
+                rot_error = np.zeros(3)
+            else:
+                angle = np.arccos(np.clip((trace - 1) / 2, -1, 1))
+                if angle < 1e-6:
+                    rot_error = np.zeros(3)
+                else:
+                    axis = np.array([
+                        R_error[2, 1] - R_error[1, 2],
+                        R_error[0, 2] - R_error[2, 0],
+                        R_error[1, 0] - R_error[0, 1]
+                    ]) / (2 * np.sin(angle))
+                    rot_error = axis * angle
+            
+            # 加权误差（位置误差权重更高）
+            return np.concatenate([pos_error * 10.0, rot_error])
+        
+        # 3. 定义关节限位约束
+        def constraint_bounds():
+            # Piper机械臂的关节限位（弧度）
+            lower_bounds = np.array([-2.967, -2.618, -2.618, -3.054, -1.588, -3.054])
+            upper_bounds = np.array([2.967, 2.618, 2.618, 3.054, 1.588, 3.054])
+            return lower_bounds, upper_bounds
+        
+        # 4. 使用Levenberg-Marquardt算法优化
+        lower, upper = constraint_bounds()
+        result = least_squares(
+            error_function,
+            x0=np.array(initial_guess),
+            bounds=(lower, upper),
+            method='trf',  # Trust Region Reflective (处理边界更好)
+            ftol=tolerance,
+            xtol=1e-8,
+            max_nfev=max_iterations,
+            verbose=0
+        )
+        
+        # 5. 验证结果
+        if result.success:
+            optimized_q = result.x.tolist()
+            
+            # 检查最终误差
+            T_final = self.forward_kinematics(optimized_q)
+            final_pos_error = np.linalg.norm(T_final[:3, 3] - T_target[:3, 3])
+            
+            if final_pos_error < 0.001:  # 1mm精度
+                print(f"  ✓ 高精度IK成功: 位置误差={final_pos_error*1000:.3f}mm")
+                print(f"    优化迭代: {result.nfev}次, 最终残差: {result.cost:.2e}")
+                print(f"    关节角度: {np.rad2deg(optimized_q)}")
+                return optimized_q
+            else:
+                print(f"  ⚠️ 优化收敛但精度不足: {final_pos_error*1000:.2f}mm")
+                return optimized_q  # 仍然返回，但警告精度
+        else:
+            print(f"  ❌ 数值优化失败: {result.message}")
+            return initial_guess  # 返回初始解析解
+
 
     def get_joint_tf(self, joint_idx, angle):
         """获取指定关节的变换矩阵"""

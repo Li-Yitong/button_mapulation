@@ -1,14 +1,21 @@
 import time
-import rospy
-import tf2_ros
-from geometry_msgs.msg import Point
-from geometry_msgs.msg import TransformStamped
-from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped, Quaternion
-from geometry_msgs.msg import PointStamped
-from visualization_msgs.msg import Marker
-from tf.transformations import quaternion_from_matrix
 from utils.utils_math import rotation_matrix_to_quaternion
+
+# 条件导入 ROS1 依赖（仅在 ROS1 环境中使用）
+try:
+    import rospy
+    import tf2_ros
+    from geometry_msgs.msg import Point
+    from geometry_msgs.msg import TransformStamped
+    from nav_msgs.msg import Path
+    from geometry_msgs.msg import PoseStamped, Quaternion
+    from geometry_msgs.msg import PointStamped
+    from visualization_msgs.msg import Marker
+    from tf.transformations import quaternion_from_matrix
+    ROS1_AVAILABLE = True
+except ImportError:
+    ROS1_AVAILABLE = False
+    print("ROS1 依赖未安装，ROS1 功能不可用")
 
 
 def publish_tf(arm, joints, time):
@@ -167,9 +174,12 @@ def publish_sphere_marker(pub, point, frame_id="arm_base", color=(1.0, 0.0, 0.0,
     rospy.loginfo("发布球体Marker...")
     pub.publish(marker)
 
-path = Path()
-path.header.frame_id = "arm_base"
-path.poses = []
+# 全局变量（仅在ROS1环境中初始化）
+path = None
+if ROS1_AVAILABLE:
+    path = Path()
+    path.header.frame_id = "arm_base"
+    path.poses = []
 
 def publish_trajectory(path_pub, position):
 
@@ -198,5 +208,208 @@ def publish_target_point(pub, point, frame_id="camera"):
     point_msg.point.z = point[2]
 
     # 发布消息
+    pub.publish(point_msg)
+
+
+# ========================================
+# ROS2 版本函数
+# ========================================
+
+def publish_tf_ros2(node, arm, joints, time):
+    """
+    发布所有关节的TF变换 - ROS2版本
+    
+    Args:
+        node: rclpy.node.Node 实例
+        arm: PiperArm 实例
+        joints: 关节角度列表
+        time: builtin_interfaces.msg.Time
+    """
+    try:
+        import rclpy
+        from tf2_ros import TransformBroadcaster
+        from geometry_msgs.msg import TransformStamped
+    except ImportError:
+        node.get_logger().error("ROS2 依赖未安装，请确保在ROS2环境中运行")
+        return
+    
+    # 创建 TF broadcaster
+    if not hasattr(node, '_tf_broadcaster'):
+        node._tf_broadcaster = TransformBroadcaster(node)
+    
+    tf_broadcaster = node._tf_broadcaster
+    
+    # 发布各关节变换
+    for i in range(6):
+        # 计算当前关节的变换矩阵
+        T = arm.get_joint_tf(i, joints[i])
+
+        # 创建TF消息
+        transform_stamped = TransformStamped()
+        transform_stamped.header.stamp = time
+        transform_stamped.header.frame_id = "link{}".format(i) if i > 0 else "arm_base"
+        transform_stamped.child_frame_id = "link{}".format(i + 1)
+
+        # 提取平移和旋转
+        transform_stamped.transform.translation.x = T[0, 3]
+        transform_stamped.transform.translation.y = T[1, 3]
+        transform_stamped.transform.translation.z = T[2, 3]
+
+        # 转换旋转矩阵为四元数
+        rot_matrix = T[:3, :3]
+        quat = rotation_matrix_to_quaternion(rot_matrix)
+        transform_stamped.transform.rotation.x = quat[1]
+        transform_stamped.transform.rotation.y = quat[2]
+        transform_stamped.transform.rotation.z = quat[3]
+        transform_stamped.transform.rotation.w = quat[0]
+
+        # 发布变换
+        tf_broadcaster.sendTransform(transform_stamped)
+
+    # 发布夹爪相关变换
+    transform_stamped = TransformStamped()
+    transform_stamped.header.stamp = time
+    transform_stamped.header.frame_id = "link6"
+    transform_stamped.child_frame_id = "gripper_base"
+
+    transform_stamped.transform.translation.x = 0.0
+    transform_stamped.transform.translation.y = 0.0
+    transform_stamped.transform.translation.z = 0.0
+
+    transform_stamped.transform.rotation.x = 0.0
+    transform_stamped.transform.rotation.y = 0.0
+    transform_stamped.transform.rotation.z = 0.0
+    transform_stamped.transform.rotation.w = 1.0
+    tf_broadcaster.sendTransform(transform_stamped)
+
+    transform_stamped.header.frame_id = "gripper_base"
+    transform_stamped.child_frame_id = "link7"
+    transform_stamped.transform.translation.z = 0.1358
+    transform_stamped.transform.rotation.x = 0.70711
+    transform_stamped.transform.rotation.y = 0.0
+    transform_stamped.transform.rotation.z = 0.0
+    transform_stamped.transform.rotation.w = 0.70711
+    tf_broadcaster.sendTransform(transform_stamped)
+
+    transform_stamped.child_frame_id = "link8"
+    transform_stamped.transform.translation.z = 0.1358
+    transform_stamped.transform.rotation.x = 0.0
+    transform_stamped.transform.rotation.y = 0.70711
+    transform_stamped.transform.rotation.z = 0.70711
+    transform_stamped.transform.rotation.w = 0.0
+    tf_broadcaster.sendTransform(transform_stamped)
+
+    # 发布 dummy_link 到 arm_base
+    transform_stamped = TransformStamped()
+    transform_stamped.header.stamp = time
+    transform_stamped.header.frame_id = "dummy_link"
+    transform_stamped.child_frame_id = "arm_base"
+
+    transform_stamped.transform.translation.x = 0.0
+    transform_stamped.transform.translation.y = 0.0
+    transform_stamped.transform.translation.z = 0.0
+    transform_stamped.transform.rotation.x = 0.0
+    transform_stamped.transform.rotation.y = 0.0
+    transform_stamped.transform.rotation.z = 0.0
+    transform_stamped.transform.rotation.w = 1.0
+    tf_broadcaster.sendTransform(transform_stamped)
+    
+    # 发布 world 到 dummy_link
+    transform_stamped = TransformStamped()
+    transform_stamped.header.stamp = time
+    transform_stamped.header.frame_id = "world"
+    transform_stamped.child_frame_id = "dummy_link"
+
+    transform_stamped.transform.translation.x = 0.0
+    transform_stamped.transform.translation.y = 0.0
+    transform_stamped.transform.translation.z = 0.0
+    transform_stamped.transform.rotation.x = 0.0
+    transform_stamped.transform.rotation.y = 0.0
+    transform_stamped.transform.rotation.z = 0.0
+    transform_stamped.transform.rotation.w = 1.0
+    tf_broadcaster.sendTransform(transform_stamped)
+
+    # 发布相机变换
+    transform_stamped.header.frame_id = "link6"
+    transform_stamped.child_frame_id = "camera"
+    transform_stamped.transform.translation.x = arm.link6_t_camera[0]
+    transform_stamped.transform.translation.y = arm.link6_t_camera[1]
+    transform_stamped.transform.translation.z = arm.link6_t_camera[2]
+    transform_stamped.transform.rotation.x = arm.link6_q_camera[1]
+    transform_stamped.transform.rotation.y = arm.link6_q_camera[2]
+    transform_stamped.transform.rotation.z = arm.link6_q_camera[3]
+    transform_stamped.transform.rotation.w = arm.link6_q_camera[0]
+    tf_broadcaster.sendTransform(transform_stamped)
+
+
+def publish_sphere_marker_ros2(node, pub, point, frame_id="arm_base", color=(1.0, 0.0, 0.0, 1.0), radius=0.02):
+    """
+    发布三维点坐标的球形Marker - ROS2版本
+    
+    Args:
+        node: rclpy.node.Node 实例
+        pub: Marker 发布器
+        point: [x, y, z] 坐标
+        frame_id: 坐标系ID
+        color: RGBA颜色值
+        radius: 球体半径
+    """
+    try:
+        from visualization_msgs.msg import Marker
+        from builtin_interfaces.msg import Duration
+    except ImportError:
+        node.get_logger().error("ROS2 依赖未安装")
+        return
+    
+    marker = Marker()
+    marker.header.frame_id = frame_id
+    marker.header.stamp = node.get_clock().now().to_msg()
+    marker.ns = "point_markers"
+    marker.id = 0
+    marker.action = Marker.ADD
+    marker.type = Marker.SPHERE
+
+    marker.pose.position.x = float(point[0])
+    marker.pose.position.y = float(point[1])
+    marker.pose.position.z = float(point[2])
+    marker.pose.orientation.w = 1.0
+
+    marker.scale.x = radius * 2
+    marker.scale.y = radius * 2
+    marker.scale.z = radius * 2
+
+    marker.color.r = color[0]
+    marker.color.g = color[1]
+    marker.color.b = color[2]
+    marker.color.a = color[3]
+
+    marker.lifetime = Duration(sec=1, nanosec=0)
+    pub.publish(marker)
+
+
+def publish_target_point_ros2(node, pub, point, frame_id="camera"):
+    """
+    发布目标点 - ROS2版本
+    
+    Args:
+        node: rclpy.node.Node 实例
+        pub: PointStamped 发布器
+        point: [x, y, z] 坐标
+        frame_id: 坐标系ID
+    """
+    try:
+        from geometry_msgs.msg import PointStamped
+    except ImportError:
+        node.get_logger().error("ROS2 依赖未安装")
+        return
+    
+    point_msg = PointStamped()
+    point_msg.header.stamp = node.get_clock().now().to_msg()
+    point_msg.header.frame_id = frame_id
+
+    point_msg.point.x = float(point[0])
+    point_msg.point.y = float(point[1])
+    point_msg.point.z = float(point[2])
+
     pub.publish(point_msg)
 

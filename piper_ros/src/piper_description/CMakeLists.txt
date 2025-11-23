@@ -1,14 +1,13 @@
-cmake_minimum_required(VERSION 2.8.3)
-
+cmake_minimum_required(VERSION 3.5)
 project(piper_description)
 
-find_package(catkin REQUIRED)
+# 找到ament_cmake来构建这个包
+find_package(ament_cmake REQUIRED)
 
-catkin_package()
+# 安装文件夹
+install(DIRECTORY config launch meshes urdf rviz
+  DESTINATION share/${PROJECT_NAME}/
+)
 
-find_package(roslaunch)
-
-foreach(dir config launch meshes urdf)
-	install(DIRECTORY ${dir}/
-		DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/${dir})
-endforeach(dir)
+# 包的描述
+ament_package()

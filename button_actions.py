@@ -5,11 +5,64 @@
 所有参数通过宏定义配置，无需视觉检测
 """
 from piper_sdk import *
-import rospy
 import time
 import numpy as np
 import math
 from piper_arm import PiperArm
+
+# 条件导入 ROS (兼容 ROS1 和非 ROS 环境)
+try:
+    import rospy
+    ROS_AVAILABLE = True
+except ImportError:
+    ROS_AVAILABLE = False
+    # 提供兼容的时间函数
+    class FakeRospy:
+        class Time:
+            @staticmethod
+            def now():
+                class TimeObj:
+                    def __init__(self):
+                        self.secs = int(time.time())
+                        self.nsecs = int((time.time() % 1) * 1e9)
+                    def to_sec(self):
+                        return time.time()
+                    def __sub__(self, other):
+                        class Duration:
+                            def __init__(self, val):
+                                self.val = val
+                            def to_sec(self):
+                                return self.val
+                        return Duration(time.time() - other.to_sec())
+                return TimeObj()
+        
+        @staticmethod
+        def init_node(name, anonymous=False):
+            """Fake init_node for compatibility"""
+            pass
+        
+        @staticmethod
+        def sleep(duration):
+            time.sleep(duration)
+        
+        class Rate:
+            def __init__(self, hz):
+                self.period = 1.0 / hz
+                self.last_time = time.time()
+            def sleep(self):
+                elapsed = time.time() - self.last_time
+                if elapsed < self.period:
+                    time.sleep(self.period - elapsed)
+                self.last_time = time.time()
+        
+        @staticmethod
+        def Publisher(*args, **kwargs):
+            class FakePublisher:
+                def publish(self, msg):
+                    pass
+            return FakePublisher()
+    
+    rospy = FakeRospy()
 
 # ========================================
 # 宏定义 - 用户配置区
@@ -21,9 +74,9 @@ PI = math.pi
 factor = 1000 * 180 / PI
 # === 目标位姿配置 (基座坐标系) ===
 # 位置 (单位：米)
-TARGET_X = 0.26  # X坐标 (降低以保证可达性)
+TARGET_X = 0.35  # X坐标 (降低以保证可达性)
 TARGET_Y = 0.00  # Y坐标
-TARGET_Z = 0.25  # Z坐标 (提高以保证可达性)
+TARGET_Z = 0.30  # Z坐标 (提高以保证可达性)
 
 # 姿态 (单位：弧度) - 相对于默认姿态（末端朝前）的旋转
 # 注意：Roll=Pitch=Yaw=0 表示默认姿态（末端朝前），这是一个可达的姿态
@@ -39,7 +92,7 @@ USE_6D_POSE = True   # True=使用6D位姿(含姿态), False=仅使用位置(末
 # 这是正常现象，不影响按钮操作的执行。如果需要更高精度，请考虑使用MoveIt的笛卡尔路径规划。
 
 # === 动作类型选择 ===
-ACTION_TYPE = 'push'  # 'toggle'/'plugin'/'push'/'knob'
+ACTION_TYPE = 'knob'  # 'toggle'/'plugin'/'push'/'knob'
 
 # === 控制模式 ===
 USE_MOVEIT = True  # 启动脚本自动设置
@@ -63,13 +116,13 @@ TOGGLE_TOGGLE_SPEED = 30        # 拨动速度 (单位: 无量纲, 范围: 0~100
 
 # === Push (按压按钮) 配置 ===
 PUSH_GRIPPER_CLOSE = 0          # 夹爪闭合值 (单位: 0.001mm, 范围: 0~70000, 0=完全闭合)
-PUSH_INSERT_DEPTH = 0.003        # 按压深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
-PUSH_HOLD_TIME = 0.01              # 保持时间 (单位: 秒, 范围: 0~无限, 建议: 1~5)
+PUSH_INSERT_DEPTH = 0.002        # 按压深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
+PUSH_HOLD_TIME = 1              # 保持时间 (单位: 秒, 范围: 0~无限, 建议: 1~5)
 PUSH_PRESS_SPEED = 30           # 按压速度 (单位: 无量纲, 范围: 0~100, 建议: 20~50慢速按压)
 
 # === Knob (旋转旋钮) 配置 ===
 KNOB_GRIPPER_OPEN = 45000       # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
-KNOB_INSERT_DEPTH = 0.007        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
+KNOB_INSERT_DEPTH = 0.003        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
 KNOB_GRIPPER_HOLD = 8000       # 闭合夹持宽度 (单位: 0.001mm, 范围: 0~70000, 建议: 15000~35000)
 KNOB_ROTATION_ANGLE = 45        # 旋转角度 (单位: 度, 范围: -360~360, 建议: 30~180)
 KNOB_ROTATION_DIRECTION = 'ccw'  # 旋转方向: 'cw'=顺时针(右旋), 'ccw'=逆时针(左旋)
@@ -88,7 +141,7 @@ FAST_SPEED = 100                # 快速移动速度 (单位: 无量纲, 范围:
 # 轨迹执行频率控制
 RVIZ_PUBLISH_RATE = 10          # 轨迹发布到RViz的频率 (Hz)
 COMMAND_SEND_RATE = 80          # 命令发送频率 (Hz) - 在轨迹点之间持续发送命令
-PLANNER_ID = "BKPIECE"       # 可选: "RRTstar", "PRM", "BKPIECE", "EST"
+PLANNER_ID = "RRTstar"       # 可选: "RRTstar", "PRM", "BKPIECE", "EST"
 
 # 调试配置
 DEBUG_TRAJECTORY = False        # 是否显示详细的轨迹调试信息（关闭以提高速度）
@@ -96,35 +149,64 @@ DEBUG_TRAJECTORY = False        # 是否显示详细的轨迹调试信息（关�
 # 尾迹可视化配置
 MAX_TRAIL_POINTS = 100          # 最大尾迹点数
 
+# === MoveIt2 配置 ===
+# 注意: ROS2 Foxy的MoveIt2不支持Python Action Client API
+# 虽然action server存在且可以连接，但不会响应Python客户端的goal请求
+# 这是已知限制，需要ROS2 Humble+或pymoveit2库
+# 因此在ROS2 Foxy环境中自动禁用MoveIt2，使用SDK模式
 MOVEIT_AVAILABLE = False
 move_group = None
+moveit_node = None  # ROS2 node for MoveIt2
+ros2_executor = None  # ROS2 executor for spinning
+ROS2_FOXY_DETECTED = False
+
 try:
     if USE_MOVEIT:
-        import moveit_commander
-        from moveit_msgs.msg import DisplayTrajectory
+        # ROS2 MoveIt2 imports
+        import rclpy
+        from rclpy.node import Node
+        from moveit_msgs.action import MoveGroup as MoveGroupAction
+        from rclpy.action import ActionClient
+        from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
+        from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
         from nav_msgs.msg import Path
         from visualization_msgs.msg import Marker
         from geometry_msgs.msg import Point, PoseStamped
         from std_msgs.msg import ColorRGBA
+        
+        # MoveIt2在ROS2 Foxy中可用（需要使用干净环境避免ROS1冲突）
+        # 使用 start_moveit2_clean.sh 启动MoveIt2
+        # 使用 run_button_actions_clean.sh 运行本程序
         MOVEIT_AVAILABLE = True
-        print("✓ MoveIt已加载")
-except ImportError:
-    print("⚠️  MoveIt未加载，将使用SDK模式")
+        try:
+            import os
+            ros_distro = os.environ.get('ROS_DISTRO', '')
+            print(f"✓ MoveIt2 (ROS2 {ros_distro}) 已加载")
+        except Exception:
+            print("✓ MoveIt2 (ROS2) 已加载")
+except ImportError as e:
+    print(f"⚠️  MoveIt2未加载，将使用SDK模式: {e}")
 
-# 全局变量
+# Global variables
 piper = None
 piper_arm = None
 display_trajectory_publisher = None
 ee_path_publisher = None
 ee_trail_publisher = None
+joint_state_publisher = None  # ROS2 joint_states publisher
+joint_state_timer = None      # ROS2 timer
 
-# 轨迹记录（用于显示尾迹）
+# Trajectory recording (trail visualization)
 ee_trail_points = []
 
-# 轨迹记录（规划 vs 执行）
-planned_trajectory = []      # MoveIt规划的轨迹（末端XYZ）
-executed_trajectory = []     # 实际执行的轨迹（末端XYZ）
-trajectory_save_dir = "trajectory"  # 轨迹保存目录
+# Trajectory recording (planning vs execution) - ACCUMULATED ACROSS ALL STEPS
+planned_trajectory = []      # Accumulated planned end-effector XYZ across all planning steps
+executed_trajectory = []     # Accumulated executed end-effector XYZ across all execution steps
+all_planned_points = []      # Accumulated MoveIt planned points (JointTrajectoryPoint objects)
+all_execution_records = []   # Accumulated execution records [(time, joints, xyz, velocities), ...]
+trajectory_start_time = 0.0  # Time when the first planning started (for cumulative timeline)
+trajectory_save_dir = "trajectory"  # Trajectory save directory
+pvat_data = None  # PVAT (Position-Velocity-Acceleration-Time) data
 
 
 # ========================================
@@ -272,70 +354,127 @@ def save_execution_trajectory_to_csv(executed_points, filename_prefix="executed"
         return None
 
 
+def publish_joint_states_callback():
+    """
+    ROS2定时器回调：发布当前关节状态
+    用于MoveIt2规划时获取机器人当前状态
+    """
+    global piper, joint_state_publisher, moveit_node
+    
+    if not MOVEIT_AVAILABLE or joint_state_publisher is None:
+        return
+    
+    try:
+        from sensor_msgs.msg import JointState
+        from std_msgs.msg import Header
+        
+        msg = JointState()
+        msg.header = Header()
+        msg.header.stamp = moveit_node.get_clock().now().to_msg()
+        msg.header.frame_id = ''
+        
+        # 发布所有关节（joint1-joint7）
+        msg.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'joint7']
+        
+        # 如果有真实硬件，从piper读取当前位置
+        # 这里使用零位作为默认值（或者可以读取piper.GetArmStatus()）
+        msg.position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        msg.velocity = []
+        msg.effort = []
+        
+        joint_state_publisher.publish(msg)
+    except Exception as e:
+        # 静默失败，避免刷屏
+        pass
+
+
 def publish_dual_trajectory_markers(planned_xyz, executed_xyz):
     """
-    在RViz中发布规划路径和执行路径的对比可视化
+    在RViz中发布规划路径和执行路径的对比可视化 (ROS2版本)
     
     Args:
         planned_xyz: 规划的末端XYZ轨迹 (N×3 array)
         executed_xyz: 执行的末端XYZ轨迹 (M×3 array)
     """
-    if not MOVEIT_AVAILABLE or len(planned_xyz) == 0:
+    global moveit_node
+    
+    if not MOVEIT_AVAILABLE or len(planned_xyz) == 0 or moveit_node is None:
+        print("  ⚠️  无法发布轨迹对比标记（MoveIt2未初始化或无数据）")
         return
     
-    marker_pub = rospy.Publisher('/trajectory_comparison', Marker, queue_size=10)
-    rospy.sleep(0.1)
-    
-    # 发布规划路径（蓝色线）
-    planned_marker = Marker()
-    planned_marker.header.frame_id = "arm_base"
-    planned_marker.header.stamp = rospy.Time.now()
-    planned_marker.ns = "planned_trajectory"
-    planned_marker.id = 0
-    planned_marker.type = Marker.LINE_STRIP
-    planned_marker.action = Marker.ADD
-    planned_marker.scale.x = 0.005  # 线宽 5mm
-    planned_marker.color.r = 0.0
-    planned_marker.color.g = 0.5
-    planned_marker.color.b = 1.0
-    planned_marker.color.a = 0.8
-    planned_marker.pose.orientation.w = 1.0
-    
-    for xyz in planned_xyz:
-        p = Point()
-        p.x = xyz[0]
-        p.y = xyz[1]
-        p.z = xyz[2]
-        planned_marker.points.append(p)
-    
-    # 发布执行路径（红色线）
-    executed_marker = Marker()
-    executed_marker.header.frame_id = "arm_base"
-    executed_marker.header.stamp = rospy.Time.now()
-    executed_marker.ns = "executed_trajectory"
-    executed_marker.id = 1
-    executed_marker.type = Marker.LINE_STRIP
-    executed_marker.action = Marker.ADD
-    executed_marker.scale.x = 0.003  # 线宽 3mm
-    executed_marker.color.r = 1.0
-    executed_marker.color.g = 0.0
-    executed_marker.color.b = 0.0
-    executed_marker.color.a = 0.9
-    executed_marker.pose.orientation.w = 1.0
-    
-    if len(executed_xyz) > 0:
-        for xyz in executed_xyz:
+    try:
+        from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+        from visualization_msgs.msg import Marker
+        from geometry_msgs.msg import Point
+        from std_msgs.msg import ColorRGBA
+        import time
+        
+        # 创建publisher（QoS配置）
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        marker_pub = moveit_node.create_publisher(Marker, '/trajectory_comparison', qos)
+        time.sleep(0.1)  # 等待publisher建立连接
+        
+        # 发布规划路径（蓝色线）
+        planned_marker = Marker()
+        planned_marker.header.frame_id = "base_link"
+        planned_marker.header.stamp = moveit_node.get_clock().now().to_msg()
+        planned_marker.ns = "planned_trajectory"
+        planned_marker.id = 0
+        planned_marker.type = Marker.LINE_STRIP
+        planned_marker.action = Marker.ADD
+        planned_marker.scale.x = 0.005  # 线宽 5mm
+        planned_marker.color.r = 0.0
+        planned_marker.color.g = 0.5
+        planned_marker.color.b = 1.0
+        planned_marker.color.a = 0.8
+        planned_marker.pose.orientation.w = 1.0
+        
+        for xyz in planned_xyz:
             p = Point()
-            p.x = xyz[0]
-            p.y = xyz[1]
-            p.z = xyz[2]
-            executed_marker.points.append(p)
-    
-    # 发布标记
-    for _ in range(3):
-        marker_pub.publish(planned_marker)
-        marker_pub.publish(executed_marker)
-        rospy.sleep(0.1)
+            p.x = float(xyz[0])
+            p.y = float(xyz[1])
+            p.z = float(xyz[2])
+            planned_marker.points.append(p)
+        
+        # 发布执行路径（红色线）
+        executed_marker = Marker()
+        executed_marker.header.frame_id = "base_link"
+        executed_marker.header.stamp = moveit_node.get_clock().now().to_msg()
+        executed_marker.ns = "executed_trajectory"
+        executed_marker.id = 1
+        executed_marker.type = Marker.LINE_STRIP
+        executed_marker.action = Marker.ADD
+        executed_marker.scale.x = 0.003  # 线宽 3mm
+        executed_marker.color.r = 1.0
+        executed_marker.color.g = 0.0
+        executed_marker.color.b = 0.0
+        executed_marker.color.a = 0.9
+        executed_marker.pose.orientation.w = 1.0
+        
+        if len(executed_xyz) > 0:
+            for xyz in executed_xyz:
+                p = Point()
+                p.x = float(xyz[0])
+                p.y = float(xyz[1])
+                p.z = float(xyz[2])
+                executed_marker.points.append(p)
+        
+        # 发布标记
+        for _ in range(3):
+            marker_pub.publish(planned_marker)
+            marker_pub.publish(executed_marker)
+            time.sleep(0.05)
+        
+        print(f"  ✓ 轨迹对比已发布到 RViz (/trajectory_comparison)")
+        print(f"    🔵 蓝色 = 规划路径 ({len(planned_xyz)}个点)")
+        if len(executed_xyz) > 0:
+            print(f"    🔴 红色 = 执行路径 ({len(executed_xyz)}个点)")
+    except Exception as e:
+        print(f"  ⚠️  发布轨迹标记失败: {e}")
     
     print(f"  ✓ 轨迹对比已发布到 RViz (/trajectory_comparison)")
     print(f"    🔵 蓝色 = 规划路径 ({len(planned_xyz)}个点)")
@@ -510,7 +649,7 @@ def publish_ee_path():
         return
     
     path_msg = Path()
-    path_msg.header.frame_id = "arm_base"
+    path_msg.header.frame_id = "base_link"  # Fixed: 使用正确的frame名称
     path_msg.header.stamp = rospy.Time.now()
     
     for point in ee_trail_points:
@@ -533,7 +672,7 @@ def publish_ee_trail_marker():
         return
     
     marker = Marker()
-    marker.header.frame_id = "arm_base"
+    marker.header.frame_id = "base_link"  # Fixed: 使用正确的frame名称
     marker.header.stamp = rospy.Time.now()
     marker.ns = "ee_trail"
     marker.id = 0
@@ -573,67 +712,72 @@ def clear_ee_trail():
 
 
 def clear_trajectory_records():
-    """清空轨迹记录（在新的动作序列开始前调用）"""
-    global planned_trajectory, executed_trajectory
+    """
+    Clear trajectory records (call before starting a new action sequence)
+    This clears ALL accumulated planning and execution data
+    """
+    global planned_trajectory, executed_trajectory, all_planned_points, all_execution_records, trajectory_start_time
     planned_trajectory = []
     executed_trajectory = []
-    print("  ✓ 已清空轨迹记录")
+    all_planned_points = []
+    all_execution_records = []
+    trajectory_start_time = 0.0
+    print("  ✓ Trajectory records cleared (ready for new action sequence)")
 
 
 def save_and_visualize_trajectory():
     """
-    保存并可视化完整的轨迹记录（在动作序列结束后调用）
+    Save and visualize complete trajectory records (call after action sequence ends)
+    This generates PVAT analysis charts for the entire sequence from start to finish
     """
-    global planned_trajectory, executed_trajectory
+    global planned_trajectory, executed_trajectory, pvat_data, all_planned_points, all_execution_records
     
-    if len(planned_trajectory) == 0:
-        print("  ⚠️  没有规划轨迹记录")
+    if len(all_planned_points) == 0:
+        print("\n  ⚠️  No planning data, skipping trajectory visualization")
         return
     
     print("\n" + "="*70)
-    print("📊 保存和可视化轨迹...")
+    print("📊 Saving and visualizing complete trajectory...")
     print("="*70)
-    print(f"  📍 规划轨迹点数: {len(planned_trajectory)}")
-    print(f"  📍 执行轨迹点数: {len(executed_trajectory)}")
+    print(f"  📍 Accumulated planned points: {len(all_planned_points)}")
+    print(f"  📍 Accumulated execution records: {len(all_execution_records)}")
+    print(f"  📍 Total planned XYZ points: {len(planned_trajectory)}")
+    print(f"  📍 Total executed XYZ points: {len(executed_trajectory)}")
     
-    # 1. 保存规划轨迹到CSV（简化版：只有XYZ）
-    if DEBUG_TRAJECTORY:
-        from datetime import datetime
-        import csv
-        
-        ensure_trajectory_dir()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # 保存规划轨迹
-        planned_file = f"{trajectory_save_dir}/planned_trajectory_{timestamp}.csv"
-        with open(planned_file, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(['点号', 'X (m)', 'Y (m)', 'Z (m)'])
-            for i, xyz in enumerate(planned_trajectory):
-                writer.writerow([i+1, f"{xyz[0]:.6f}", f"{xyz[1]:.6f}", f"{xyz[2]:.6f}"])
-        print(f"  ✓ 规划轨迹已保存: {planned_file}")
-        
-        # 保存执行轨迹
-        if len(executed_trajectory) > 0:
-            executed_file = f"{trajectory_save_dir}/executed_trajectory_{timestamp}.csv"
-            with open(executed_file, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(['点号', 'X (m)', 'Y (m)', 'Z (m)'])
-                for i, xyz in enumerate(executed_trajectory):
-                    writer.writerow([i+1, f"{xyz[0]:.6f}", f"{xyz[1]:.6f}", f"{xyz[2]:.6f}"])
-            print(f"  ✓ 执行轨迹已保存: {executed_file}")
-    
-    # 2. 发布轨迹对比到RViz
+    # 1. Publish trajectory comparison to RViz
     if len(executed_trajectory) > 0:
         publish_dual_trajectory_markers(planned_trajectory, executed_trajectory)
     
-    # 3. 绘制Matplotlib对比图
-    if DEBUG_TRAJECTORY and len(executed_trajectory) > 0:
-        # 生成时间序列（简化：假设均匀采样）
-        planned_times = np.linspace(0, len(planned_trajectory)*0.1, len(planned_trajectory))
-        executed_times = np.linspace(0, len(executed_trajectory)*0.0625, len(executed_trajectory))
-        plot_trajectory_comparison(planned_trajectory, executed_trajectory, 
-                                 planned_times, executed_times)
+    # 2. Generate and save PVAT charts
+    if len(all_execution_records) > 0:
+        # Compute total time span
+        total_time = all_execution_records[-1][0] if len(all_execution_records) > 0 else 0.0
+        
+        # Save PVAT data
+        pvat_data = {
+            'planned_points': all_planned_points,      # All accumulated MoveIt points
+            'execution_records': all_execution_records,  # All accumulated execution records
+            'total_time': total_time
+        }
+        
+        # Save to pickle file
+        ensure_trajectory_dir()
+        import pickle
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pvat_file = f"{trajectory_save_dir}/pvat_data_{timestamp}.pkl"
+        
+        with open(pvat_file, 'wb') as f:
+            pickle.dump(pvat_data, f)
+        print(f"  ✓ PVAT data saved: {pvat_file}")
+        
+        # Generate PVAT charts
+        try:
+            from plot_pvat import plot_pvat_analysis
+            chart_file = plot_pvat_analysis(pvat_data, trajectory_save_dir)
+            print(f"  ✓ PVAT chart generated: {chart_file}")
+        except Exception as e:
+            print(f"  ⚠️  Failed to generate PVAT chart: {e}")
     
     print("="*70)
 
@@ -642,11 +786,24 @@ def control_arm_sdk(joints, speed=50, gripper_value=None):
     """SDK 直接控制模式"""
     global piper
     
+    # 关键修复：确保机械臂使能（防止规划失败后失能导致摔落）
+    piper.EnableArm(7)  # 使能所有关节 + 夹爪
+    time.sleep(0.05)  # 等待使能生效
+    
     joints_int = [int(joints[i] * factor) for i in range(min(6, len(joints)))]
     joints_int[4] = max(-70000, joints_int[4])
     
     piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
     piper.JointCtrl(*joints_int)
+    
+    # 🔧 关键修复：等待机械臂到达目标位置
+    # 估算运动时间（基于速度和关节角度差异）
+    current = get_current_joints()
+    max_joint_diff = max([abs(joints[i] - current[i]) for i in range(6)])
+    estimated_time = max_joint_diff / (speed / 100.0 * 2.0) + 0.5  # 保守估计
+    estimated_time = min(estimated_time, 10.0)  # 最长等待10秒
+    print(f"  [SDK] 移动中... (预计{estimated_time:.1f}秒)")
+    time.sleep(estimated_time)
     
     if gripper_value is not None:
         gripper_int = int(gripper_value)
@@ -659,247 +816,364 @@ def control_arm_sdk(joints, speed=50, gripper_value=None):
 
 
 def control_arm_moveit(joints, speed=50, gripper_value=None):
-    """MoveIt 规划控制模式"""
-    global piper, move_group, display_trajectory_publisher
-    global planned_trajectory, executed_trajectory
+    """MoveIt2 规划控制模式 (ROS2) - 只规划不执行，执行用SDK"""
+    global piper, move_group, moveit_node, display_trajectory_publisher
+    global planned_trajectory, executed_trajectory, piper_arm
     
-    if move_group is None:
+    # 检查 MoveIt2 是否可用
+    if move_group is None or moveit_node is None:
+        print("  ⚠️  MoveIt2 未初始化，回退到 SDK 模式")
+        return control_arm_sdk(joints, speed, gripper_value)
+    
+    if not MOVEIT_AVAILABLE:
+        print("  ⚠️  MoveIt2 不可用，回退到 SDK 模式")
         return control_arm_sdk(joints, speed, gripper_value)
     
     try:
-        # 获取当前关节角度（起始点）
-        current_joints = get_current_joints()
-        
-        move_group.clear_pose_targets()
-        move_group.stop()
-        
-        # 【关键】设置起始状态为当前实际位置（在clear之后）
-        from moveit_msgs.msg import RobotState
+        # 导入 ROS2 消息类型
+        from moveit_msgs.msg import Constraints, JointConstraint, RobotState
+        from moveit_msgs.action import MoveGroup as MoveGroupAction
         from sensor_msgs.msg import JointState
-        robot_state = RobotState()
-        robot_state.joint_state = JointState()
-        robot_state.joint_state.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-        robot_state.joint_state.position = list(current_joints)
-        move_group.set_start_state(robot_state)
+        import rclpy
+        import time as time_module
         
+        # 【关键】获取当前实际关节角度作为起点
+        current_joints = get_current_joints()
         target_joints = joints[:6] if len(joints) > 6 else joints
-        move_group.set_joint_value_target(target_joints)
         
-        # MoveIt 规划
-        print("  [MoveIt] 规划轨迹...")
+        print("  [MoveIt2] 规划轨迹...")
         print(f"  📍 起始点 (弧度): [{', '.join([f'{j:.4f}' for j in current_joints])}]")
         print(f"  📍 目标点 (弧度): [{', '.join([f'{j:.4f}' for j in target_joints])}]")
         
-        plan = move_group.plan()
-        if isinstance(plan, tuple):
-            success, trajectory = plan[0], plan[1]
-        else:
-            success, trajectory = True, plan
+        # 创建规划目标 - 完全按照test_moveit.py的模式
+        goal = MoveGroupAction.Goal()
         
-        if not success or not trajectory.joint_trajectory.points:
-            print("  ❌ 规划失败，切换到SDK模式")
+        # 1. 设置workspace parameters
+        from moveit_msgs.msg import WorkspaceParameters
+        from std_msgs.msg import Header
+        from geometry_msgs.msg import Vector3
+        
+        goal.request.workspace_parameters = WorkspaceParameters()
+        goal.request.workspace_parameters.header = Header()
+        goal.request.workspace_parameters.header.frame_id = "base_link"  # Fixed: 使用正确的frame名称
+        goal.request.workspace_parameters.min_corner = Vector3(x=-1.0, y=-1.0, z=-1.0)
+        goal.request.workspace_parameters.max_corner = Vector3(x=1.0, y=1.0, z=1.0)
+        
+        # 2. 设置基本参数
+        goal.request.group_name = 'arm'  # 🔧 关键修复：与SRDF中的group名称一致（不是piper_arm）
+        goal.request.num_planning_attempts = 10
+        goal.request.allowed_planning_time = 5.0
+        goal.request.max_velocity_scaling_factor = float(speed) / 100.0
+        goal.request.max_acceleration_scaling_factor = float(speed) / 100.0
+        
+        # 3. 【关键修复】设置起始状态为当前实际位置
+        goal.request.start_state = RobotState()
+        goal.request.start_state.joint_state = JointState()
+        goal.request.start_state.joint_state.header = Header()
+        goal.request.start_state.joint_state.header.stamp = moveit_node.get_clock().now().to_msg()
+        goal.request.start_state.joint_state.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        goal.request.start_state.joint_state.position = current_joints
+        goal.request.start_state.is_diff = False  # 使用绝对状态，不是diff
+        
+        # 4. 设置目标约束
+        constraints = Constraints()
+        joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        
+        for i, angle in enumerate(target_joints):
+            jc = JointConstraint()
+            jc.joint_name = joint_names[i]
+            jc.position = float(angle)
+            jc.tolerance_above = 0.1
+            jc.tolerance_below = 0.1
+            jc.weight = 1.0
+            constraints.joint_constraints.append(jc)
+        
+        goal.request.goal_constraints = [constraints]
+        
+        # 5. 设置planning options（完全按test_moveit.py格式）
+        goal.planning_options.plan_only = True
+        goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+        
+        # 发送规划请求
+        print("  [MoveIt2] 发送规划请求...")
+        print(f"  [DEBUG] group_name: {goal.request.group_name}")
+        print(f"  [DEBUG] planner_id: {goal.request.planner_id if goal.request.planner_id else '(使用默认)'}")
+        print(f"  [DEBUG] planning_attempts: {goal.request.num_planning_attempts}")
+        print(f"  [DEBUG] planning_time: {goal.request.allowed_planning_time}s")
+        print(f"  [DEBUG] plan_only: {goal.planning_options.plan_only}")
+        print(f"  [DEBUG] start_state.is_diff: {goal.request.start_state.is_diff}")
+        print(f"  [DEBUG] 起始关节位置: {goal.request.start_state.joint_state.position}")
+        print(f"  [DEBUG] 目标约束数: {len(goal.request.goal_constraints[0].joint_constraints)}")
+        print(f"  [DEBUG] workspace frame: {goal.request.workspace_parameters.header.frame_id}")
+        send_goal_future = move_group.send_goal_async(goal)
+        print(f"  [DEBUG] send_goal_future 已创建，类型: {type(send_goal_future)}")
+        
+        # 等待goal被接受（后台spin线程会处理future）
+        print("  [MoveIt2] 等待goal接受...")
+        import time as time_module
+        timeout = 10.0
+        start_time = time_module.time()
+        while not send_goal_future.done():
+            time_module.sleep(0.01)
+            if time_module.time() - start_time > timeout:
+                print(f"  ❌ 等待goal接受超时")
+                print(f"  💡 可能原因: MoveIt2 move_group未运行或规划组名称错误")
+                return control_arm_sdk(joints, speed, gripper_value)
+        
+        goal_handle = send_goal_future.result()
+        if not goal_handle or not goal_handle.accepted:
+            print(f"  ❌ 规划请求被拒绝，切换到SDK模式")
             return control_arm_sdk(joints, speed, gripper_value)
         
-        traj_points = trajectory.joint_trajectory.points
-        print(f"  ✓ 规划成功 (轨迹点: {len(traj_points)})")
-        print(f"  📊 轨迹点数由MoveIt根据路径长短、速度、加速度自动计算")
+        print("  ✓ 规划请求已接受，等待规划结果...")
+        print(f"  [DEBUG] Goal handle: {goal_handle}")
+        print(f"  [DEBUG] Goal ID: {goal_handle.goal_id if hasattr(goal_handle, 'goal_id') else 'N/A'}")
         
-        # 提取规划的末端轨迹（XYZ）- 累积到全局变量
-        global planned_trajectory
-        step_planned = []
-        for point in traj_points:
-            joints_rad = [point.positions[i] for i in range(6)]
-            T = piper_arm.forward_kinematics(joints_rad)
-            xyz = T[:3, 3]
-            step_planned.append(xyz.copy())
-            planned_trajectory.append(xyz.copy())  # 累积到全局
+        # 等待规划完成（后台spin线程会处理future）
+        result_future = goal_handle.get_result_async()
+        print(f"  [DEBUG] Result future created, waiting up to 30s...")
+        timeout = 30.0
+        start_time = time_module.time()
+        while not result_future.done():
+            time_module.sleep(0.01)
+            if time_module.time() - start_time > timeout:
+                print("  ❌ 规划超时(30秒)，MoveIt2可能正在计算或卡住，切换到SDK模式")
+                return control_arm_sdk(joints, speed, gripper_value)
         
-        print(f"  ✓ 已提取规划轨迹的末端XYZ (本步骤: {len(step_planned)}个点, 累计: {len(planned_trajectory)}个点)")
+        result = result_future.result()
+        if not result or result.result.error_code.val != 1:  # 1 = SUCCESS
+            error_code = result.result.error_code.val if result else "None"
+            print(f"  ❌ 规划失败 (错误码: {error_code})，切换到SDK模式")
+            return control_arm_sdk(joints, speed, gripper_value)
         
-        # 保存规划轨迹到CSV
-        if DEBUG_TRAJECTORY:
-            save_trajectory_to_csv(traj_points, "planned")
+        print(f"  ✓ 规划成功！")
         
-        # 打印轨迹详细信息（简化版：只显示XYZ）
-        if DEBUG_TRAJECTORY:
-            import tf.transformations as tft
+        # 提取轨迹信息
+        if result.result.planned_trajectory and result.result.planned_trajectory.joint_trajectory.points:
+            traj_points = result.result.planned_trajectory.joint_trajectory.points
+            print(f"  📊 轨迹点数: {len(traj_points)}")
             
-            # 计算起点和终点的末端XYZ
-            start_joints = current_joints
-            start_T = piper_arm.forward_kinematics(start_joints)
-            start_xyz = start_T[:3, 3]
+            # 提取规划的末端轨迹（XYZ）- 累积到全局变量
+            step_planned = []
+            for point in traj_points:
+                joints_rad = [point.positions[i] for i in range(6)]
+                T = piper_arm.forward_kinematics(joints_rad)
+                xyz = T[:3, 3]
+                step_planned.append(xyz.copy())
+                planned_trajectory.append(xyz.copy())  # 累积到全局
             
-            end_joints = [traj_points[-1].positions[i] for i in range(6)]
-            end_T = piper_arm.forward_kinematics(end_joints)
-            end_xyz = end_T[:3, 3]
+            print(f"  ✓ 已提取规划轨迹的末端XYZ (本步骤: {len(step_planned)}个点, 累计: {len(planned_trajectory)}个点)")
             
-            print(f"\n  起点 XYZ: [{start_xyz[0]:.4f}, {start_xyz[1]:.4f}, {start_xyz[2]:.4f}]")
-            print(f"  终点 XYZ: [{end_xyz[0]:.4f}, {end_xyz[1]:.4f}, {end_xyz[2]:.4f}]")
-            print(f"  轨迹点数: {len(traj_points)}, 总时长: {traj_points[-1].time_from_start.to_sec():.2f}s")
+            # 计算轨迹总时长
+            total_traj_time = traj_points[-1].time_from_start.sec + traj_points[-1].time_from_start.nanosec * 1e-9
+            print(f"  [SDK] 执行完整轨迹 (点数: {len(traj_points)}, 总时长: {total_traj_time:.2f}s, 发送频率: {COMMAND_SEND_RATE}Hz)")
+            expected_commands = int(total_traj_time * COMMAND_SEND_RATE)
+            print(f"  [DEBUG] 预计发送命令: {expected_commands}次 ({COMMAND_SEND_RATE}Hz × {total_traj_time:.2f}s)")
             
-            # 只在点数较少时显示详细轨迹
-            if len(traj_points) <= 20:
-                print(f"  轨迹点详情 (XYZ):")
-                for idx in [0, len(traj_points)//4, len(traj_points)//2, 3*len(traj_points)//4, len(traj_points)-1]:
-                    if idx < len(traj_points):
-                        point = traj_points[idx]
-                        point_joints = [point.positions[i] for i in range(6)]
-                        point_T = piper_arm.forward_kinematics(point_joints)
-                        point_xyz = point_T[:3, 3]
-                        print(f"    点#{idx}: [{point_xyz[0]:.4f}, {point_xyz[1]:.4f}, {point_xyz[2]:.4f}] @ {point.time_from_start.to_sec():.2f}s")
-            else:
-                print(f"  (轨迹点较多，仅显示起止点)")
-            print()
-        
-        # 发布轨迹到RViz可视化（使用RVIZ_PUBLISH_RATE频率）
-        if display_trajectory_publisher is not None and display_trajectory_publisher.get_num_connections() > 0:
-            display_msg = DisplayTrajectory()
-            display_msg.trajectory_start = move_group.get_current_state()
-            display_msg.trajectory.append(trajectory)
+            piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
             
-            rviz_rate = rospy.Rate(RVIZ_PUBLISH_RATE)
-            for _ in range(3):  # 发布3次确保RViz接收
-                display_trajectory_publisher.publish(display_msg)
-                rviz_rate.sleep()
-            print(f"  ✓ 轨迹已发布到RViz (频率: {RVIZ_PUBLISH_RATE}Hz)")
-        
-        # SDK 执行完整轨迹（使用插值平滑执行）+ 记录实际轨迹
-        print(f"  [SDK] 执行完整轨迹 (点数: {len(traj_points)}, 速度: {speed}, 发送频率: {COMMAND_SEND_RATE}Hz)")
-        
-        piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
-        
-        if DEBUG_TRAJECTORY:
-            print("\n  " + "="*70)
-            print("  🚀 开始执行完整轨迹 (高频插值模式 + 记录实际轨迹):")
-            print("  " + "="*70)
-        
-        start_time = rospy.Time.now()
-        command_rate = rospy.Rate(COMMAND_SEND_RATE)
-        
-        # 清空执行轨迹记录
-        executed_trajectory = []
-        execution_records = []  # [(time, joints, xyz), ...]
-        
-        current_point_idx = 0
-        next_point_idx = 1
-        
-        while next_point_idx < len(traj_points):
-            elapsed = (rospy.Time.now() - start_time).to_sec()
+            if DEBUG_TRAJECTORY:
+                print("\n  " + "="*70)
+                print("  🚀 开始执行完整轨迹 (高频插值模式 + 记录实际轨迹):")
+                print("  " + "="*70)
             
-            # 找到当前时间对应的轨迹段
-            while next_point_idx < len(traj_points) and elapsed >= traj_points[next_point_idx].time_from_start.to_sec():
-                current_point_idx = next_point_idx
-                next_point_idx += 1
+            start_time = time_module.time()
             
-            if next_point_idx >= len(traj_points):
-                break
+            # 清空执行轨迹记录
+            global executed_trajectory
+            executed_trajectory = []
+            execution_records = []  # [(time, joints, xyz, velocities), ...]
             
-            # 获取当前段的两个端点
-            point_current = traj_points[current_point_idx]
-            point_next = traj_points[next_point_idx]
+            current_point_idx = 0
+            next_point_idx = 1
+            command_count = 0
             
-            # 计算插值比例
-            t_current = point_current.time_from_start.to_sec()
-            t_next = point_next.time_from_start.to_sec()
+            # 高频插值执行循环（80Hz）- 基于轨迹总时长而不是点索引
+            while True:
+                elapsed = time_module.time() - start_time
+                
+                # 检查是否完成整个轨迹
+                if elapsed >= total_traj_time:
+                    break
+                
+                # 找到当前时间对应的轨迹段
+                while next_point_idx < len(traj_points):
+                    next_time = traj_points[next_point_idx].time_from_start.sec + \
+                               traj_points[next_point_idx].time_from_start.nanosec * 1e-9
+                    if elapsed >= next_time:
+                        current_point_idx = next_point_idx
+                        next_point_idx += 1
+                    else:
+                        break
+                
+                # 如果已经到最后一段，保持在最后两个点之间插值
+                if next_point_idx >= len(traj_points):
+                    next_point_idx = len(traj_points) - 1
+                    current_point_idx = next_point_idx - 1
+                
+                # 获取当前段的两个端点
+                point_current = traj_points[current_point_idx]
+                point_next = traj_points[next_point_idx]
+                
+                # 计算插值比例
+                t_current = point_current.time_from_start.sec + point_current.time_from_start.nanosec * 1e-9
+                t_next = point_next.time_from_start.sec + point_next.time_from_start.nanosec * 1e-9
+                
+                if t_next > t_current:
+                    ratio = (elapsed - t_current) / (t_next - t_current)
+                    ratio = max(0.0, min(1.0, ratio))  # 限制在[0,1]
+                else:
+                    ratio = 1.0
+                
+                # 线性插值计算当前应该发送的关节角度和速度
+                joints_interpolated = []
+                velocities_interpolated = []
+                for i in range(6):
+                    pos_current = point_current.positions[i]
+                    pos_next = point_next.positions[i]
+                    pos_interp = pos_current + ratio * (pos_next - pos_current)
+                    joints_interpolated.append(pos_interp)
+                    
+                    # 速度插值（用于PVAT图表）
+                    vel_current = point_current.velocities[i] if len(point_current.velocities) > i else 0.0
+                    vel_next = point_next.velocities[i] if len(point_next.velocities) > i else 0.0
+                    vel_interp = vel_current + ratio * (vel_next - vel_current)
+                    velocities_interpolated.append(vel_interp)
+                
+                # 发送插值后的关节命令
+                joints_int = [int(joints_interpolated[i] * factor) for i in range(6)]
+                joints_int[4] = max(-70000, joints_int[4])
+                piper.JointCtrl(*joints_int)
+                command_count += 1
+                
+                # 记录实际执行的轨迹（每个周期都记录，用于精确的PVAT图表）
+                T = piper_arm.forward_kinematics(joints_interpolated)
+                xyz = T[:3, 3]
+                execution_records.append((elapsed, joints_interpolated.copy(), xyz.copy(), velocities_interpolated.copy()))
+                executed_trajectory.append(xyz.copy())
+                
+                # 打印执行信息（每10个点打印一次）
+                if DEBUG_TRAJECTORY and command_count % 10 == 0:
+                    print(f"  执行段 #{current_point_idx}→{next_point_idx}/{len(traj_points)-1} | 时间: {elapsed:.3f}s/{total_traj_time:.2f}s | 插值: {ratio:.2f} | 命令: {command_count}/{expected_commands}")
+                
+                # 按照固定频率发送命令（80Hz = 12.5ms间隔）
+                time_module.sleep(1.0 / COMMAND_SEND_RATE)
             
-            if t_next > t_current:
-                ratio = (elapsed - t_current) / (t_next - t_current)
-                ratio = max(0.0, min(1.0, ratio))  # 限制在[0,1]
-            else:
-                ratio = 1.0
-            
-            # 线性插值计算当前应该发送的关节角度
-            joints_interpolated = []
-            for i in range(6):
-                pos_current = point_current.positions[i]
-                pos_next = point_next.positions[i]
-                pos_interp = pos_current + ratio * (pos_next - pos_current)
-                joints_interpolated.append(pos_interp)
-            
-            # 发送插值后的关节命令
-            joints_int = [int(joints_interpolated[i] * factor) for i in range(6)]
+            # 发送最终位置（确保到达）
+            final_point = traj_points[-1]
+            joints_int = [int(final_point.positions[i] * factor) for i in range(6)]
             joints_int[4] = max(-70000, joints_int[4])
             piper.JointCtrl(*joints_int)
             
-            # 记录实际执行的轨迹（每N个周期记录一次）
-            if len(execution_records) == 0 or int(elapsed * COMMAND_SEND_RATE) % 5 == 0:
-                T = piper_arm.forward_kinematics(joints_interpolated)
-                xyz = T[:3, 3]
-                execution_records.append((elapsed, joints_interpolated.copy(), xyz.copy()))
-                executed_trajectory.append(xyz.copy())
+            final_joints_rad = [final_point.positions[i] for i in range(6)]
+            T_final = piper_arm.forward_kinematics(final_joints_rad)
+            xyz_final = T_final[:3, 3]
             
-            # 更新末端执行器轨迹（降低更新频率以减少计算）
-            if int(elapsed * COMMAND_SEND_RATE) % 5 == 0:  # 每5个周期更新一次
-                update_ee_trail(joints_interpolated)
+            elapsed_final = time_module.time() - start_time
+            final_vels = [final_point.velocities[i] if len(final_point.velocities) > i else 0.0 for i in range(6)]
+            execution_records.append((elapsed_final, final_joints_rad, xyz_final.copy(), final_vels))
+            executed_trajectory.append(xyz_final.copy())
             
-            # 打印执行信息（每10个点打印一次）
-            if DEBUG_TRAJECTORY and current_point_idx % 10 == 0 and int(elapsed * 100) % 50 == 0:
-                print(f"  执行点 #{current_point_idx}/{len(traj_points)-1} | 已用时: {elapsed:.3f}s | 插值比例: {ratio:.2f}")
-            
-            # 按照固定频率发送命令
-            command_rate.sleep()
-        
-        # 发送最终位置
-        final_point = traj_points[-1]
-        joints_int = [int(final_point.positions[i] * factor) for i in range(6)]
-        joints_int[4] = max(-70000, joints_int[4])
-        piper.JointCtrl(*joints_int)
-        
-        final_joints_rad = [final_point.positions[i] for i in range(6)]
-        T_final = piper_arm.forward_kinematics(final_joints_rad)
-        xyz_final = T_final[:3, 3]
-        
-        elapsed_final = (rospy.Time.now() - start_time).to_sec()
-        execution_records.append((elapsed_final, final_joints_rad, xyz_final.copy()))
-        executed_trajectory.append(xyz_final.copy())
-        
-        update_ee_trail(final_joints_rad)
-        
-        total_exec_time = (rospy.Time.now() - start_time).to_sec()
-        if DEBUG_TRAJECTORY:
-            print(f"\n  ✓ 轨迹命令发送完成，实际用时: {total_exec_time:.3f}s")
-            print(f"  ✓ 记录了 {len(execution_records)} 个实际执行点")
-            print("  " + "="*70 + "\n")
-        else:
-            print(f"  ✓ 轨迹命令发送完成 (用时: {total_exec_time:.3f}s)")
-        
-        # 等待机械臂真正到达目标位置
-        print("  ⏳ 等待机械臂到达目标位置...")
-        target_reached = False
-        wait_start = rospy.Time.now()
-        max_wait_time = 3.0  # 最多等待3秒
-        position_threshold = 0.01  # 位置误差阈值 (弧度，约0.57度)
-        
-        while not target_reached and (rospy.Time.now() - wait_start).to_sec() < max_wait_time:
-            current_joints_actual = get_current_joints()
-            
-            # 计算与目标位置的误差
-            max_error = max([abs(current_joints_actual[i] - final_joints_rad[i]) for i in range(6)])
-            
-            if max_error < position_threshold:
-                target_reached = True
-                print(f"  ✓ 机械臂已到达目标位置 (最大误差: {max_error:.5f} rad)")
+            total_exec_time = time_module.time() - start_time
+            if DEBUG_TRAJECTORY:
+                print(f"\n  ✓ 轨迹命令发送完成，实际用时: {total_exec_time:.3f}s")
+                print(f"  ✓ 发送了 {command_count} 个插值命令 (预计: {expected_commands})")
+                print(f"  ✓ 记录了 {len(execution_records)} 个执行点")
+                print("  " + "="*70 + "\n")
             else:
-                rospy.sleep(0.05)  # 等待50ms后再检查
-        
-        if not target_reached:
-            print(f"  ⚠️  等待超时，当前最大误差: {max_error:.5f} rad")
-        
-        # 额外等待一小段时间确保稳定
-        rospy.sleep(0.01)
+                print(f"  ✓ 轨迹命令发送完成 (用时: {total_exec_time:.3f}s, 命令数: {command_count})")
+            
+            # 等待机械臂真正到达目标位置
+            print("  ⏳ 等待机械臂到达目标位置...")
+            target_reached = False
+            wait_start = time_module.time()
+            max_wait_time = 3.0  # 最多等待3秒
+            position_threshold = 0.01  # 位置误差阈值 (弧度，约0.57度)
+            
+            while not target_reached and (time_module.time() - wait_start) < max_wait_time:
+                current_joints_actual = get_current_joints()
+                
+                # 计算与目标位置的误差
+                max_error = max([abs(current_joints_actual[i] - final_joints_rad[i]) for i in range(6)])
+                
+                if max_error < position_threshold:
+                    target_reached = True
+                    print(f"  ✓ 机械臂已到达目标位置 (最大误差: {max_error:.5f} rad)")
+                else:
+                    time_module.sleep(0.05)  # 等待50ms后再检查
+            
+            if not target_reached:
+                print(f"  ⚠️  等待超时，当前最大误差: {max_error:.5f} rad")
+            
+            # Extra wait to ensure stability
+            time_module.sleep(0.01)
+            
+            print(f"  ✓ Trajectory executed (MoveIt2 planned {len(traj_points)} pts → SDK interpolated {len(execution_records)} cmds)")
+            
+            # Accumulate trajectory data for final PVAT analysis (instead of overwriting)
+            global all_planned_points, all_execution_records, trajectory_start_time
+            
+            # Set start time on first planning
+            if len(all_planned_points) == 0:
+                trajectory_start_time = execution_records[0][0] if len(execution_records) > 0 else 0.0
+            
+            # Adjust execution record timestamps to be cumulative
+            time_offset = all_execution_records[-1][0] if len(all_execution_records) > 0 else 0.0
+            for record in execution_records:
+                t, joints, xyz, vels = record
+                all_execution_records.append((time_offset + t, joints, xyz, vels))
+            
+            # Adjust planned point timestamps to be cumulative
+            time_offset_planned = all_planned_points[-1].time_from_start if len(all_planned_points) > 0 else None
+            for point in traj_points:
+                # Create a copy and adjust timestamp
+                import copy
+                point_copy = copy.deepcopy(point)
+                if time_offset_planned is not None:
+                    # Add offset to make timeline cumulative
+                    point_copy.time_from_start.sec += time_offset_planned.sec
+                    point_copy.time_from_start.nanosec += time_offset_planned.nanosec
+                    # Handle nanosecond overflow
+                    if point_copy.time_from_start.nanosec >= 1_000_000_000:
+                        point_copy.time_from_start.sec += 1
+                        point_copy.time_from_start.nanosec -= 1_000_000_000
+                all_planned_points.append(point_copy)
+            
+            print(f"  ✓ Accumulated trajectory data: {len(all_planned_points)} planned points, {len(all_execution_records)} execution records")
+        else:
+            # If no trajectory, use SDK directly
+            print("  ⚠️  No trajectory obtained, using SDK mode")
+            # 安全检查：避免大幅度突然运动
+            current_joints = get_current_joints()
+            joint_diff = np.array(joints) - np.array(current_joints)
+            max_diff = np.max(np.abs(joint_diff))
+            if max_diff > 1.5:  # 超过86度的突变
+                print(f"  ⚠️  关节角度变化过大({np.rad2deg(max_diff):.1f}°)，拒绝执行以防失能")
+                return False
+            return control_arm_sdk(joints, min(speed, 30), gripper_value)  # 降低速度
         
         # 控制夹爪
         if gripper_value is not None:
             gripper_int = int(gripper_value)
             piper.GripperCtrl(abs(gripper_int), 1000, 0x01, 0)
         
-        print(f"  ✓ 执行完成")
+        print(f"  ✓ MoveIt2规划+SDK执行完成")
         return True
+        
     except Exception as e:
-        print(f"  ❌ MoveIt执行失败: {e}，切换到SDK模式")
+        print(f"  ❌ MoveIt2 执行错误: {e}")
         import traceback
         traceback.print_exc()
-        return control_arm_sdk(joints, speed, gripper_value)
+        print("  回退到 SDK 模式")
+        # 安全检查：避免大幅度突然运动
+        current_joints = get_current_joints()
+        joint_diff = np.array(joints) - np.array(current_joints)
+        max_diff = np.max(np.abs(joint_diff))
+        if max_diff > 1.5:  # 超过86度的突变
+            print(f"  ⚠️  关节角度变化过大({np.rad2deg(max_diff):.1f}°)，拒绝执行以防失能")
+            return False
+        return control_arm_sdk(joints, min(speed, 30), gripper_value)  # 降低速度
+
 
 
 def control_arm(joints, speed=50, use_moveit=False, gripper_value=None):
@@ -1004,15 +1278,133 @@ def create_target_transform(x, y, z, roll=0.0, pitch=0.0, yaw=0.0, use_6d=False)
     return T
 
 
-def move_along_end_effector_z(current_joints, distance, speed=20):
+def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10):
     """
-    沿末端执行器z轴方向移动（保持当前姿态）
-    使用MoveIt笛卡尔路径规划以提高可靠性
+    使用高精度IK求解（piper_arm数值优化版本）
+    
+    参数:
+        target_pose: 4x4齐次变换矩阵或Pose消息
+        timeout: 保留参数（兼容性）
+        attempts: 保留参数（兼容性）
+    
+    返回:
+        关节角度列表 (6个元素) 或 None（失败时）
+    """
+    global piper_arm
+    
+    # 直接使用piper_arm的高精度数值优化IK
+    if isinstance(target_pose, np.ndarray):
+        # 使用优化版本的IK（解析解 + Levenberg-Marquardt优化）
+        result = piper_arm.inverse_kinematics_refined(target_pose, max_iterations=50, tolerance=1e-6)
+        if result is not False and result is not None:
+            return result
+        else:
+            # 如果高精度失败，回退到基础解析解
+            print("  ⚠️ 高精度IK失败，使用基础解析解")
+            return piper_arm.inverse_kinematics(target_pose)
+    
+    return None
+
+
+def compute_custom_cartesian_path(start_joints, waypoint_poses, eef_step=0.01):
+    """
+    自定义笛卡尔路径规划器（不依赖MoveIt2 API）
+    通过在笛卡尔空间插值并用IK求解关节角度
+    
+    参数:
+        start_joints: 起始关节角度 (6个元素的列表/数组)
+        waypoint_poses: 目标位姿列表 (4x4变换矩阵的列表)
+        eef_step: 末端执行器步长 (米)，控制插值密度
+    
+    返回:
+        (trajectory_points, fraction)
+        - trajectory_points: 关节轨迹点列表 [(joints, time), ...]
+        - fraction: 成功规划的比例 (0.0~1.0)
+    """
+    global piper_arm
+    
+    if len(waypoint_poses) == 0:
+        return [], 0.0
+    
+    trajectory_points = []
+    current_joints = list(start_joints)
+    
+    # 从起始点开始
+    trajectory_points.append((current_joints, 0.0))
+    
+    total_waypoints = len(waypoint_poses)
+    successful_waypoints = 0
+    cumulative_time = 0.0
+    
+    # 计算起始位姿
+    current_pose = piper_arm.forward_kinematics(current_joints)
+    
+    for waypoint_idx, target_pose in enumerate(waypoint_poses):
+        # 计算当前位姿到目标位姿的距离
+        current_pos = current_pose[:3, 3]
+        target_pos = target_pose[:3, 3]
+        distance = np.linalg.norm(target_pos - current_pos)
+        
+        # 根据eef_step计算需要多少插值点
+        num_steps = max(2, int(distance / eef_step) + 1)
+        
+        # 在笛卡尔空间插值
+        for step in range(1, num_steps + 1):
+            alpha = step / num_steps
+            
+            # 位置插值（线性）
+            interp_pos = current_pos + alpha * (target_pos - current_pos)
+            
+            # 姿态插值（SLERP - 球面线性插值）
+            # 简化：直接使用目标姿态（保持姿态不变）
+            interp_pose = target_pose.copy()
+            interp_pose[:3, 3] = interp_pos
+            
+            # 用MoveIt2 IK求解关节角度（高精度）
+            interp_joints = compute_ik_moveit2(interp_pose, timeout=2.0, attempts=5)
+            
+            if not interp_joints:
+                # IK失败，停止规划
+                print(f"    ⚠️ 笛卡尔插值点#{step}/{num_steps}的IK求解失败")
+                break
+            
+            # 计算时间（基于距离和速度）
+            step_distance = np.linalg.norm(
+                piper_arm.forward_kinematics(interp_joints)[:3, 3] - 
+                piper_arm.forward_kinematics(current_joints)[:3, 3]
+            )
+            step_time = step_distance / 0.1  # 假设速度0.1m/s
+            cumulative_time += step_time
+            
+            trajectory_points.append((interp_joints, cumulative_time))
+            current_joints = interp_joints
+        
+        # 检查是否成功到达当前waypoint
+        final_pose = piper_arm.forward_kinematics(current_joints)
+        final_pos = final_pose[:3, 3]
+        error = np.linalg.norm(final_pos - target_pos)
+        
+        if error < 0.01:  # 1cm误差容限
+            successful_waypoints += 1
+            current_pose = final_pose
+        else:
+            print(f"    ⚠️ Waypoint {waypoint_idx+1}到达误差较大: {error*100:.2f}cm")
+            break
+    
+    fraction = successful_waypoints / total_waypoints if total_waypoints > 0 else 0.0
+    return trajectory_points, fraction
+
+
+def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientation=True):
+    """
+    沿末端执行器z轴方向移动（保持当前姿态或理想姿态）
+    使用自定义笛卡尔路径规划以提高可靠性
     
     参数:
         current_joints: 当前关节角度 (弧度)
         distance: 移动距离 (米)，正值=沿末端+Z轴方向，负值=沿末端-Z轴方向
         speed: 移动速度
+        lock_orientation: True=使用理想姿态方向（补偿IK误差），False=使用实际姿态方向
     
     返回:
         新的关节角度
@@ -1020,6 +1412,7 @@ def move_along_end_effector_z(current_joints, distance, speed=20):
     说明:
         末端坐标系Z轴 = 旋转矩阵第3列
         直接沿末端Z轴方向移动，正值=+Z方向，负值=-Z方向
+        当lock_orientation=True时，使用目标姿态的Z轴方向，避免IK误差导致的方向偏移
     """
     global piper_arm, move_group, piper
     
@@ -1027,257 +1420,124 @@ def move_along_end_effector_z(current_joints, distance, speed=20):
     current_T = piper_arm.forward_kinematics(current_joints)
     print(f"  当前位置: ({current_T[0,3]:.3f}, {current_T[1,3]:.3f}, {current_T[2,3]:.3f})")
     
-    # 沿末端z轴移动 - 末端坐标系的Z轴是旋转矩阵的第3列
-    # 正值distance = 沿末端+Z轴方向移动（插入）
-    # 注意：根据实际测试，不需要取反
-    z_axis = current_T[:3, 2]
-    print(f"  移动距离: {distance*100:.1f}cm，末端Z轴方向: ({z_axis[0]:.3f}, {z_axis[1]:.3f}, {z_axis[2]:.3f})")
+    # 打印当前姿态旋转矩阵
+    print(f"  当前旋转矩阵:")
+    print(f"    [{current_T[0,0]:7.4f}, {current_T[0,1]:7.4f}, {current_T[0,2]:7.4f}]")
+    print(f"    [{current_T[1,0]:7.4f}, {current_T[1,1]:7.4f}, {current_T[1,2]:7.4f}]")
+    print(f"    [{current_T[2,0]:7.4f}, {current_T[2,1]:7.4f}, {current_T[2,2]:7.4f}]")
     
-    # 计算新的目标位置
+    # 决定使用哪个Z轴方向
+    if lock_orientation:
+        # 使用理想姿态的Z轴方向（从目标姿态配置获取）
+        ideal_T = create_target_transform(
+            TARGET_X, TARGET_Y, TARGET_Z,
+            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+            USE_6D_POSE
+        )
+        z_axis = ideal_T[:3, 2]  # 理想Z轴方向
+        print(f"  ✓ 使用姿态锁定模式（理想Z轴方向）")
+    else:
+        # 使用当前实际姿态的Z轴方向
+        z_axis = current_T[:3, 2]
+        print(f"  使用实际姿态方向")
+    
+    print(f"  移动距离: {distance*100:.1f}cm")
+    print(f"  末端Z轴方向 (基坐标系): ({z_axis[0]:7.4f}, {z_axis[1]:7.4f}, {z_axis[2]:7.4f})")
+    
+    # 如果启用了姿态锁定，显示对比信息
+    if lock_orientation:
+        actual_z = current_T[:3, 2]
+        ideal_z = z_axis
+        angle_error = np.arccos(np.clip(np.dot(actual_z, ideal_z), -1.0, 1.0)) * 180.0 / PI
+        print(f"  实际姿态方向: ({actual_z[0]:7.4f}, {actual_z[1]:7.4f}, {actual_z[2]:7.4f})")
+        print(f"  姿态偏差角度: {angle_error:.2f}° (已补偿)")
+    else:
+        ideal_z = np.array([1.0, 0.0, 0.0])  # 末端朝前的理想方向
+        angle_error = np.arccos(np.clip(np.dot(z_axis, ideal_z), -1.0, 1.0)) * 180.0 / PI
+        print(f"  理想Z轴方向 (末端朝前): ( 1.0000,  0.0000,  0.0000)")
+        print(f"  姿态偏差角度: {angle_error:.2f}° (未补偿)")
+    
+    # 计算新的目标位置：沿末端Z轴方向移动distance米
+    # 末端Z轴 = 旋转矩阵第3列 = [1, 0, 0] （向前）
+    # distance > 0 → X增大（向前按压）✓
     target_T = current_T.copy()
     target_T[:3, 3] += z_axis * distance
+
+    
+    # 如果启用姿态锁定，保持理想姿态
+    if lock_orientation:
+        ideal_T = create_target_transform(
+            TARGET_X, TARGET_Y, TARGET_Z,
+            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+            USE_6D_POSE
+        )
+        target_T[:3, :3] = ideal_T[:3, :3]  # 使用理想姿态
+        print(f"  ✓ 保持理想姿态不变")
+    
     print(f"  目标位置: ({target_T[0,3]:.3f}, {target_T[1,3]:.3f}, {target_T[2,3]:.3f})")
     
-    # 尝试使用MoveIt笛卡尔路径规划
-    if USE_MOVEIT and MOVEIT_AVAILABLE and move_group is not None:
-        try:
-            from geometry_msgs.msg import Pose
-            from moveit_msgs.msg import RobotState
-            from sensor_msgs.msg import JointState
-            import tf.transformations as tft
-            
-            # 【关键】强制设置MoveIt的起始状态为当前实际关节角度
-            robot_state = RobotState()
-            robot_state.joint_state = JointState()
-            robot_state.joint_state.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-            robot_state.joint_state.position = list(current_joints)
-            move_group.set_start_state(robot_state)
-            print(f"  ✓ 已设置MoveIt起始状态为实际关节角度: [{', '.join([f'{j:.4f}' for j in current_joints])}]")
-            
-            # 创建目标位姿
-            target_pose = Pose()
-            target_pose.position.x = target_T[0, 3]
-            target_pose.position.y = target_T[1, 3]
-            target_pose.position.z = target_T[2, 3]
-            
-            # 从旋转矩阵转换为四元数
-            quat = tft.quaternion_from_matrix(target_T)
-            target_pose.orientation.x = quat[0]
-            target_pose.orientation.y = quat[1]
-            target_pose.orientation.z = quat[2]
-            target_pose.orientation.w = quat[3]
-            
-            # 生成笛卡尔路径（多个中间点）
-            waypoints = []
-            num_steps = max(5, int(abs(distance) * 1))  # 每厘米至少5个点
-            for i in range(num_steps + 1):
-                fraction = i / num_steps
-                intermediate_T = current_T.copy()
-                # 沿末端Z轴方向移动
-                intermediate_T[:3, 3] += z_axis * distance * fraction
-                
-                intermediate_pose = Pose()
-                intermediate_pose.position.x = intermediate_T[0, 3]
-                intermediate_pose.position.y = intermediate_T[1, 3]
-                intermediate_pose.position.z = intermediate_T[2, 3]
-                
-                quat = tft.quaternion_from_matrix(intermediate_T)
-                intermediate_pose.orientation.x = quat[0]
-                intermediate_pose.orientation.y = quat[1]
-                intermediate_pose.orientation.z = quat[2]
-                intermediate_pose.orientation.w = quat[3]
-                
-                waypoints.append(intermediate_pose)
-            
-            print(f"  [MoveIt笛卡尔] 规划路径（{len(waypoints)}个路径点）...")
-            
-            # 计算笛卡尔路径
-            # Python API: compute_cartesian_path(waypoints, eef_step, avoid_collisions)
-            (plan, fraction) = move_group.compute_cartesian_path(
-                waypoints,     # waypoints to follow (list of Pose objects)
-                0.01,          # eef_step (1cm)
-                True           # avoid_collisions
-            )
-            
-            if fraction < 0.95:
-                print(f"  ⚠️  笛卡尔路径规划覆盖率较低: {fraction*100:.1f}%，尝试简单IK...")
-                raise Exception("低覆盖率")
-            
-            print(f"  ✓ 笛卡尔路径规划成功 (覆盖率: {fraction*100:.1f}%)")
-            
-            # 执行笛卡尔路径
-            traj_points = plan.joint_trajectory.points
-            if len(traj_points) == 0:
-                raise Exception("轨迹为空")
-            
-            # 打印笛卡尔轨迹详细信息（简化版：只显示XYZ）
-            if DEBUG_TRAJECTORY:
-                import tf.transformations as tft
-                
-                # 计算当前末端位姿（起始点）
-                current_T = piper_arm.forward_kinematics(current_joints)
-                current_xyz = current_T[:3, 3]
-                
-                # 计算终点末端位姿
-                end_joints = [traj_points[-1].positions[i] for i in range(6)]
-                end_T = piper_arm.forward_kinematics(end_joints)
-                end_xyz = end_T[:3, 3]
-                
-                # 计算位移
-                delta_xyz = end_xyz - current_xyz
-                
-                print(f"\n  起点 XYZ: [{current_xyz[0]:.4f}, {current_xyz[1]:.4f}, {current_xyz[2]:.4f}]")
-                print(f"  终点 XYZ: [{end_xyz[0]:.4f}, {end_xyz[1]:.4f}, {end_xyz[2]:.4f}]")
-                print(f"  位移: ΔX={delta_xyz[0]*100:.2f}cm, ΔY={delta_xyz[1]*100:.2f}cm, ΔZ={delta_xyz[2]*100:.2f}cm")
-                print(f"  轨迹点数: {len(traj_points)}, 总时长: {traj_points[-1].time_from_start.to_sec():.2f}s")
-                
-                # 显示关键点
-                if len(traj_points) <= 20:
-                    print(f"  轨迹点详情 (XYZ):")
-                    for idx in [0, len(traj_points)//4, len(traj_points)//2, 3*len(traj_points)//4, len(traj_points)-1]:
-                        if idx < len(traj_points):
-                            point = traj_points[idx]
-                            point_joints = [point.positions[i] for i in range(6)]
-                            point_T = piper_arm.forward_kinematics(point_joints)
-                            point_xyz = point_T[:3, 3]
-                            print(f"    点#{idx}: [{point_xyz[0]:.4f}, {point_xyz[1]:.4f}, {point_xyz[2]:.4f}] @ {point.time_from_start.to_sec():.2f}s")
-                else:
-                    print(f"  (轨迹点较多，仅显示起止点)")
-                print()
-            
-            # 发布轨迹到RViz（使用RVIZ_PUBLISH_RATE频率）
-            if display_trajectory_publisher is not None and display_trajectory_publisher.get_num_connections() > 0:
-                display_msg = DisplayTrajectory()
-                display_msg.trajectory_start = move_group.get_current_state()
-                display_msg.trajectory.append(plan)
-                
-                rviz_rate = rospy.Rate(RVIZ_PUBLISH_RATE)
-                for _ in range(3):
-                    display_trajectory_publisher.publish(display_msg)
-                    rviz_rate.sleep()
-                print(f"  ✓ 笛卡尔轨迹已发布到RViz (频率: {RVIZ_PUBLISH_RATE}Hz)")
-            
-            # 执行完整笛卡尔轨迹（使用插值平滑执行）
-            print(f"  [SDK] 执行完整笛卡尔轨迹 (点数: {len(traj_points)}, 速度: {speed}, 发送频率: {COMMAND_SEND_RATE}Hz)")
-            
-            piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
-            
-            if DEBUG_TRAJECTORY:
-                print("\n  " + "="*70)
-                print("  🚀 开始执行笛卡尔轨迹 (高频插值模式):")
-                print("  " + "="*70)
-            
-            start_time = rospy.Time.now()
-            command_rate = rospy.Rate(COMMAND_SEND_RATE)
-            
-            current_point_idx = 0
-            next_point_idx = 1
-            
-            while next_point_idx < len(traj_points):
-                elapsed = (rospy.Time.now() - start_time).to_sec()
-                
-                # 找到当前时间对应的轨迹段
-                while next_point_idx < len(traj_points) and elapsed >= traj_points[next_point_idx].time_from_start.to_sec():
-                    current_point_idx = next_point_idx
-                    next_point_idx += 1
-                
-                if next_point_idx >= len(traj_points):
-                    break
-                
-                # 获取当前段的两个端点
-                point_current = traj_points[current_point_idx]
-                point_next = traj_points[next_point_idx]
-                
-                # 计算插值比例
-                t_current = point_current.time_from_start.to_sec()
-                t_next = point_next.time_from_start.to_sec()
-                
-                if t_next > t_current:
-                    ratio = (elapsed - t_current) / (t_next - t_current)
-                    ratio = max(0.0, min(1.0, ratio))
-                else:
-                    ratio = 1.0
-                
-                # 线性插值计算当前应该发送的关节角度
-                joints_interpolated = []
-                for i in range(6):
-                    pos_current = point_current.positions[i]
-                    pos_next = point_next.positions[i]
-                    pos_interp = pos_current + ratio * (pos_next - pos_current)
-                    joints_interpolated.append(pos_interp)
-                
-                # 发送插值后的关节命令
-                joints_int = [int(joints_interpolated[i] * factor) for i in range(6)]
-                joints_int[4] = max(-70000, joints_int[4])
-                piper.JointCtrl(*joints_int)
-                
-                # 更新末端执行器轨迹
-                if int(elapsed * COMMAND_SEND_RATE) % 5 == 0:
-                    update_ee_trail(joints_interpolated)
-                
-                # 打印执行信息
-                if DEBUG_TRAJECTORY and current_point_idx % 10 == 0 and int(elapsed * 100) % 50 == 0:
-                    print(f"  执行点 #{current_point_idx}/{len(traj_points)-1} | 已用时: {elapsed:.3f}s | 插值比例: {ratio:.2f}")
-                
-                command_rate.sleep()
-            
-            # 发送最终位置
-            final_point = traj_points[-1]
-            joints_int = [int(final_point.positions[i] * factor) for i in range(6)]
-            joints_int[4] = max(-70000, joints_int[4])
-            piper.JointCtrl(*joints_int)
-            
-            final_joints = [final_point.positions[i] for i in range(6)]
-            update_ee_trail(final_joints)
-            
-            total_exec_time = (rospy.Time.now() - start_time).to_sec()
-            if DEBUG_TRAJECTORY:
-                print(f"\n  ✓ 笛卡尔轨迹命令发送完成，实际用时: {total_exec_time:.3f}s")
-                print("  " + "="*70 + "\n")
-            else:
-                print(f"  ✓ 笛卡尔轨迹命令发送完成 (用时: {total_exec_time:.3f}s)")
-            
-            # 等待机械臂真正到达目标位置
-            print("  ⏳ 等待机械臂到达目标位置...")
-            target_reached = False
-            wait_start = rospy.Time.now()
-            max_wait_time = 3.0
-            position_threshold = 0.01
-            
-            final_joints_target = [traj_points[-1].positions[i] for i in range(6)]
-            
-            while not target_reached and (rospy.Time.now() - wait_start).to_sec() < max_wait_time:
-                current_joints_actual = get_current_joints()
-                max_error = max([abs(current_joints_actual[i] - final_joints_target[i]) for i in range(6)])
-                
-                if max_error < position_threshold:
-                    target_reached = True
-                    print(f"  ✓ 机械臂已到达目标位置 (最大误差: {max_error:.5f} rad)")
-                else:
-                    rospy.sleep(0.05)
-            
-            if not target_reached:
-                print(f"  ⚠️  等待超时，当前最大误差: {max_error:.5f} rad")
-            
-            # 额外等待确保稳定
-            rospy.sleep(0.2)
-            
-            return final_joints_target
-            
-        except Exception as e:
-            print(f"  ⚠️  MoveIt笛卡尔规划失败: {e}，回退到简单IK...")
+    # 使用自定义笛卡尔路径规划器
+    print(f"  [自定义笛卡尔] 生成插值路径...")
     
-    # 回退方案：使用简单IK
-    target_joints = piper_arm.inverse_kinematics(target_T)
-    if not target_joints:
-        print(f"  ❌ IK求解失败，目标位置可能不可达")
-        return None
+    # 生成笛卡尔路径waypoints
+    waypoint_poses = []
+    num_steps = max(5, int(abs(distance) * 200))  # 每厘米200个点，更密集
+    for i in range(1, num_steps + 1):
+        alpha = i / num_steps
+        intermediate_T = current_T.copy()
+        # 沿末端Z轴方向移动
+        intermediate_T[:3, 3] += z_axis * distance * alpha
+        
+        # 如果启用姿态锁定，保持理想姿态
+        if lock_orientation:
+            intermediate_T[:3, :3] = target_T[:3, :3]
+        
+        waypoint_poses.append(intermediate_T)
     
-    print(f"  [简单IK] 执行运动...")
-    if not control_arm(target_joints, speed, USE_MOVEIT):
-        return None
+    # 计算笛卡尔路径（使用IK插值）
+    cartesian_traj, fraction = compute_custom_cartesian_path(
+        current_joints, 
+        waypoint_poses, 
+        eef_step=0.005  # 5mm步长
+    )
     
-    return target_joints
+    if fraction < 0.9 or len(cartesian_traj) < 2:
+        print(f"  ⚠️  自定义笛卡尔规划覆盖率较低: {fraction*100:.1f}%，回退到简单IK...")
+        # 回退到MoveIt2高精度IK
+        target_joints = compute_ik_moveit2(target_T, timeout=5.0, attempts=10)
+        if not target_joints:
+            print(f"  ❌ 目标位置IK失败")
+            return None
+        
+        print(f"  [简单IK] 执行运动...")
+        if not control_arm(target_joints, speed, USE_MOVEIT):
+            return None
+        
+        return target_joints
+    
+    print(f"  ✓ 自定义笛卡尔规划成功 (覆盖率: {fraction*100:.1f}%, 轨迹点: {len(cartesian_traj)})")
+    
+    # 执行笛卡尔轨迹
+    print(f"  [SDK] 执行笛卡尔轨迹 ({len(cartesian_traj)}个点)...")
+    
+    piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
+    
+    for idx, (joints, t) in enumerate(cartesian_traj):
+        joints_int = [int(joints[i] * factor) for i in range(6)]
+        joints_int[4] = max(-70000, joints_int[4])
+        piper.JointCtrl(*joints_int)
+        
+        # 控制执行频率（80Hz）
+        time.sleep(1.0 / 80.0)
+    
+    # 等待到达
+    time.sleep(0.3)
+    
+    # 返回最终关节角度
+    final_joints = cartesian_traj[-1][0] if len(cartesian_traj) > 0 else current_joints
+    print(f"  ✓ 笛卡尔轨迹执行完成")
+    
+    return final_joints
 
 
 # ========================================
@@ -1314,7 +1574,7 @@ def action_plugin():
         USE_6D_POSE
     )
     
-    joints_target = piper_arm.inverse_kinematics(targetT)
+    joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
         print("❌ 目标位置IK失败")
         return False
@@ -1326,9 +1586,12 @@ def action_plugin():
     # 步骤3: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是IK计算的理论值
     print(f"\n步骤3: 沿末端z轴插入 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-    actual_joints = get_current_joints()  # 获取实际当前位置
-    print(f"  使用实际关节角度作为起点")
-    joints_insert = move_along_end_effector_z(actual_joints, PLUGIN_INSERT_DEPTH, PLUGIN_INSERT_SPEED)
+    actual_joints_step3 = get_current_joints()  # 获取实际当前位置
+    actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
+    actual_xyz_step3 = actual_T_step3[:3, 3]
+    print(f"  实际起点: XYZ=({actual_xyz_step3[0]:.3f}, {actual_xyz_step3[1]:.3f}, {actual_xyz_step3[2]:.3f})")
+    
+    joints_insert = move_along_end_effector_z(actual_joints_step3, PLUGIN_INSERT_DEPTH, PLUGIN_INSERT_SPEED)
     if not joints_insert:
         return False
     time.sleep(0.1)
@@ -1339,8 +1602,14 @@ def action_plugin():
     time.sleep(0.1)
     
     # 步骤5: 沿末端z轴拔出
+    # 【关键修复】使用实际当前位置
     print(f"\n步骤5: 沿末端z轴拔出 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-    joints_extract = move_along_end_effector_z(joints_insert, -PLUGIN_INSERT_DEPTH, PLUGIN_EXTRACT_SPEED)
+    actual_joints_step5 = get_current_joints()  # 获取插入后的实际位置
+    actual_T_step5 = piper_arm.forward_kinematics(actual_joints_step5)
+    actual_xyz_step5 = actual_T_step5[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_step5[0]:.3f}, {actual_xyz_step5[1]:.3f}, {actual_xyz_step5[2]:.3f})")
+    
+    joints_extract = move_along_end_effector_z(actual_joints_step5, -PLUGIN_INSERT_DEPTH, PLUGIN_EXTRACT_SPEED)
     if not joints_extract:
         return False
     time.sleep(0.1)
@@ -1351,7 +1620,14 @@ def action_plugin():
     time.sleep(0.1)
     
     # 步骤7: 回零位
+    # 【关键修复】使用实际当前位置
     print("\n步骤7: 回零位...")
+    actual_joints_step7 = get_current_joints()  # 获取拔出后的实际位置
+    actual_T_step7 = piper_arm.forward_kinematics(actual_joints_step7)
+    actual_xyz_step7 = actual_T_step7[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_step7[0]:.3f}, {actual_xyz_step7[1]:.3f}, {actual_xyz_step7[2]:.3f})")
+    print(f"  目标: 零点")
+    
     joints_zero = [0, 0, 0, 0, 0, 0]
     if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT):
         return False
@@ -1402,7 +1678,7 @@ def action_toggle():
         USE_6D_POSE
     )
     
-    joints_target = piper_arm.inverse_kinematics(targetT)
+    joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
         print("❌ 目标位置IK失败")
         return False
@@ -1422,9 +1698,12 @@ def action_toggle():
     # 步骤4: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是上一步计算的理论值
     print(f"\n步骤4: 沿末端z轴插入 {TOGGLE_INSERT_DEPTH*100:.1f}cm...")
-    actual_joints = get_current_joints()  # 获取实际当前位置
-    print(f"  使用实际关节角度作为起点")
-    joints_insert = move_along_end_effector_z(actual_joints, TOGGLE_INSERT_DEPTH, TOGGLE_INSERT_SPEED)
+    actual_joints_step4 = get_current_joints()  # 获取实际当前位置
+    actual_T_step4 = piper_arm.forward_kinematics(actual_joints_step4)
+    actual_xyz_step4 = actual_T_step4[:3, 3]
+    print(f"  实际起点: XYZ=({actual_xyz_step4[0]:.3f}, {actual_xyz_step4[1]:.3f}, {actual_xyz_step4[2]:.3f})")
+    
+    joints_insert = move_along_end_effector_z(actual_joints_step4, TOGGLE_INSERT_DEPTH, TOGGLE_INSERT_SPEED)
     if not joints_insert:
         return False
     time.sleep(0.5)
@@ -1435,9 +1714,15 @@ def action_toggle():
     time.sleep(1.0)
     
     # 步骤6: joint3拨动
+    # 【关键修复】使用实际当前位置
     direction_sign = -1 if TOGGLE_DIRECTION == 'left' else 1
     print(f"\n步骤6: joint3 {TOGGLE_DIRECTION}拨 {TOGGLE_JOINT3_ANGLE}°...")
-    joints_toggle = joints_insert.copy()
+    actual_joints_step6 = get_current_joints()  # 获取插入后的实际位置
+    actual_T_step6 = piper_arm.forward_kinematics(actual_joints_step6)
+    actual_xyz_step6 = actual_T_step6[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_step6[0]:.3f}, {actual_xyz_step6[1]:.3f}, {actual_xyz_step6[2]:.3f})")
+    
+    joints_toggle = actual_joints_step6.copy()
     joints_toggle[2] += direction_sign * TOGGLE_JOINT3_ANGLE * PI / 180
     if not control_arm(joints_toggle, TOGGLE_TOGGLE_SPEED, USE_MOVEIT, TOGGLE_GRIPPER_HOLD):
         return False
@@ -1449,7 +1734,14 @@ def action_toggle():
     time.sleep(0.8)
     
     # 步骤8: 回零位
+    # 【关键修复】使用实际当前位置
     print("\n步骤8: 回零位...")
+    actual_joints_step8 = get_current_joints()  # 获取拨动后的实际位置
+    actual_T_step8 = piper_arm.forward_kinematics(actual_joints_step8)
+    actual_xyz_step8 = actual_T_step8[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_step8[0]:.3f}, {actual_xyz_step8[1]:.3f}, {actual_xyz_step8[2]:.3f})")
+    print(f"  目标: 零点")
+    
     joints_zero = [0, 0, 0, 0, 0, 0]
     if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT):
         return False
@@ -1508,8 +1800,8 @@ def action_push():
         USE_6D_POSE
     )
     
-    # 先用IK计算目标关节角度
-    joints_target = piper_arm.inverse_kinematics(targetT)
+    # 使用MoveIt2高精度IK计算目标关节角度
+    joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
         print("❌ 目标位置IK失败")
         return False
@@ -1532,21 +1824,21 @@ def action_push():
         print(f"  位置误差较大，尝试笛卡尔路径微调...")
         try:
             from geometry_msgs.msg import Pose
-            import tf.transformations as tft
+            from utils.utils_math import rotation_matrix_to_quaternion
             
             target_pose = Pose()
             target_pose.position.x = TARGET_X
             target_pose.position.y = TARGET_Y
             target_pose.position.z = TARGET_Z
             
-            quat = tft.quaternion_from_matrix(targetT)
+            quat = rotation_matrix_to_quaternion(targetT[:3, :3])
             target_pose.orientation.x = quat[0]
             target_pose.orientation.y = quat[1]
             target_pose.orientation.z = quat[2]
             target_pose.orientation.w = quat[3]
             
             waypoints = [target_pose]
-            (plan, fraction) = move_group.compute_cartesian_path(waypoints, 0.01, True)
+            (plan, fraction) = move_group.compute_cartesian_path(waypoints, 0.01, 0.0)
             
             if fraction > 0.9 and len(plan.joint_trajectory.points) > 0:
                 print(f"  ✓ 笛卡尔微调成功 (覆盖率: {fraction*100:.1f}%)")
@@ -1618,18 +1910,31 @@ def action_push():
     if not joints_press:
         return False
     
-    步骤4: 保持按压
+    # 步骤4: 保持按压
     print(f"\n步骤4: 保持按压 {PUSH_HOLD_TIME}秒...")
     time.sleep(PUSH_HOLD_TIME)
     
-    # 步骤5: 返回到目标位置
-    print("\n步骤5: 返回目标位置...")
-    if not control_arm(joints_target, PUSH_PRESS_SPEED, USE_MOVEIT, PUSH_GRIPPER_CLOSE):
+    # 步骤5: 沿末端Z轴撤回（反向移动）
+    print(f"\n步骤5: 沿末端z轴撤回 {PUSH_INSERT_DEPTH*100:.1f}cm...")
+    actual_joints_after_press = get_current_joints()  # 获取按压后的实际位置
+    actual_T_after_press = piper_arm.forward_kinematics(actual_joints_after_press)
+    actual_xyz_after_press = actual_T_after_press[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_after_press[0]:.3f}, {actual_xyz_after_press[1]:.3f}, {actual_xyz_after_press[2]:.3f})")
+    
+    joints_retract = move_along_end_effector_z(actual_joints_after_press, -PUSH_INSERT_DEPTH, PUSH_PRESS_SPEED)
+    if not joints_retract:
         return False
     time.sleep(0.1)
     
     # 步骤6: 回零位
+    # 【关键修复】使用实际当前位置作为起点
     print("\n步骤6: 回零位...")
+    actual_joints_before_zero = get_current_joints()  # 获取返回后的实际位置
+    actual_T_before_zero = piper_arm.forward_kinematics(actual_joints_before_zero)
+    actual_xyz_before_zero = actual_T_before_zero[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_before_zero[0]:.3f}, {actual_xyz_before_zero[1]:.3f}, {actual_xyz_before_zero[2]:.3f})")
+    print(f"  目标: 零点")
+    
     joints_zero = [0, 0, 0, 0, 0, 0]
     if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT, PUSH_GRIPPER_CLOSE):
         return False
@@ -1674,7 +1979,7 @@ def action_knob():
         USE_6D_POSE
     )
     
-    joints_target = piper_arm.inverse_kinematics(targetT)
+    joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
         print("❌ 目标位置IK失败")
         return False
@@ -1686,9 +1991,12 @@ def action_knob():
     # 步骤3: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是IK计算的理论值
     print(f"\n步骤3: 沿末端z轴插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
-    actual_joints = get_current_joints()  # 获取实际当前位置
-    print(f"  使用实际关节角度作为起点")
-    joints_insert = move_along_end_effector_z(actual_joints, KNOB_INSERT_DEPTH, KNOB_INSERT_SPEED)
+    actual_joints_step3 = get_current_joints()  # 获取实际当前位置
+    actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
+    actual_xyz_step3 = actual_T_step3[:3, 3]
+    print(f"  实际起点: XYZ=({actual_xyz_step3[0]:.3f}, {actual_xyz_step3[1]:.3f}, {actual_xyz_step3[2]:.3f})")
+    
+    joints_insert = move_along_end_effector_z(actual_joints_step3, KNOB_INSERT_DEPTH, KNOB_INSERT_SPEED)
     if not joints_insert:
         return False
     time.sleep(0.1)
@@ -1699,13 +2007,16 @@ def action_knob():
     time.sleep(0.1)
     
     # 步骤5: 旋转joint6
+    # 【关键修复】使用实际当前位置
     direction_sign = 1 if KNOB_ROTATION_DIRECTION == 'cw' else -1
     print(f"\n步骤5: 旋转 {KNOB_ROTATION_ANGLE}° ({KNOB_ROTATION_DIRECTION})...")
-    # 【关键】使用实际当前位置，而不是之前记录的joints_insert
-    current_joints_before_rotate = get_current_joints()
-    print(f"  当前实际关节角度: [{', '.join([f'{j:.4f}' for j in current_joints_before_rotate])}]")
+    actual_joints_step5 = get_current_joints()  # 获取插入后的实际位置
+    actual_T_step5 = piper_arm.forward_kinematics(actual_joints_step5)
+    actual_xyz_step5 = actual_T_step5[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_step5[0]:.3f}, {actual_xyz_step5[1]:.3f}, {actual_xyz_step5[2]:.3f})")
+    print(f"  当前关节角度: [{', '.join([f'{j:.4f}' for j in actual_joints_step5])}]")
     
-    joints_rotate = current_joints_before_rotate.copy()
+    joints_rotate = actual_joints_step5.copy()
     joints_rotate[5] += direction_sign * KNOB_ROTATION_ANGLE * PI / 180
     print(f"  目标关节角度: [{', '.join([f'{j:.4f}' for j in joints_rotate])}]")
     if not control_arm(joints_rotate, KNOB_ROTATION_SPEED, USE_MOVEIT, KNOB_GRIPPER_HOLD):
@@ -1718,7 +2029,14 @@ def action_knob():
     time.sleep(0.1)
     
     # 步骤7: 回零位
+    # 【关键修复】使用实际当前位置
     print("\n步骤7: 回零位...")
+    actual_joints_step7 = get_current_joints()  # 获取旋转后的实际位置
+    actual_T_step7 = piper_arm.forward_kinematics(actual_joints_step7)
+    actual_xyz_step7 = actual_T_step7[:3, 3]
+    print(f"  当前位置: XYZ=({actual_xyz_step7[0]:.3f}, {actual_xyz_step7[1]:.3f}, {actual_xyz_step7[2]:.3f})")
+    print(f"  目标: 零点")
+    
     joints_zero = [0, 0, 0, 0, 0, 0]
     if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT, KNOB_GRIPPER_OPEN):
         return False
@@ -1743,7 +2061,8 @@ def action_knob():
 # ========================================
 
 def main():
-    global piper, piper_arm, move_group, display_trajectory_publisher, ee_path_publisher, ee_trail_publisher
+    global piper, piper_arm, move_group, moveit_node, display_trajectory_publisher, ee_path_publisher, ee_trail_publisher
+    global MOVEIT_AVAILABLE  # 🔧 修复：在函数开始声明，避免语法错误
     
     print("="*70)
     print("按钮操作执行器 - 独立版本")
@@ -1790,61 +2109,146 @@ def main():
     
     # 初始化 ROS
     print("\n初始化ROS...")
-    rospy.init_node('button_action_node', anonymous=True)
+    if MOVEIT_AVAILABLE:
+        # 使用ROS2
+        import rclpy
+        import rclpy.executors
+        import threading
+        
+        # 🔧 关键修复：清理可能存在的旧上下文（第二次运行时）
+        try:
+            if rclpy.ok():
+                print("  ⚠️  检测到旧的ROS2上下文，正在清理...")
+                rclpy.shutdown()
+                time.sleep(0.5)
+        except:
+            pass
+        
+        rclpy.init()
+        print("  ✓ ROS2初始化完成")
+    else:
+        # 使用ROS1或FakeRospy
+        rospy.init_node('button_action_node', anonymous=True)
+        print("  ✓ ROS初始化完成")
     
     # 初始化 MoveIt (如果需要)
     if USE_MOVEIT and MOVEIT_AVAILABLE:
         try:
-            import os
-            # 获取项目根目录（button_actions.py 所在目录）
-            project_root = os.path.dirname(os.path.abspath(__file__))
-            piper_ros_path = os.path.join(project_root, "piper_ros")
-            src_path = os.path.join(piper_ros_path, 'src')
-            current_path = os.environ.get('ROS_PACKAGE_PATH', '')
-            if src_path not in current_path:
-                os.environ['ROS_PACKAGE_PATH'] = f"{src_path}:{current_path}"
+            # 创建ROS2节点（使用唯一名称避免冲突）
+            import time as time_module
+            node_name = f'button_action_moveit_{int(time_module.time() * 1000)}'
+            moveit_node = Node(node_name)
+            print("  ✓ ROS2节点已创建")
             
-            moveit_commander.roscpp_initialize([])
-            robot = moveit_commander.RobotCommander()
-            move_group = moveit_commander.MoveGroupCommander("arm")
-            move_group.set_planning_time(2.0)  # 减少规划时间：从5秒降到2秒
-            move_group.set_max_velocity_scaling_factor(1.0)  # 最大速度
-            move_group.set_max_acceleration_scaling_factor(1.0)  # 最大加速度
-            move_group.set_planner_id(PLANNER_ID)  # 使用快速规划器
+            # 启动joint_states发布器（MoveIt2需要）
+            from sensor_msgs.msg import JointState
+            global joint_state_publisher, joint_state_timer
+            joint_state_publisher = moveit_node.create_publisher(JointState, '/joint_states', 10)
+            joint_state_timer = moveit_node.create_timer(0.1, publish_joint_states_callback)  # 10Hz
+            print("  ✓ joint_states发布器已启动 (10Hz)")
             
-            # 创建轨迹可视化发布器
-            display_trajectory_publisher = rospy.Publisher(
-                '/move_group/display_planned_path',
-                DisplayTrajectory,
-                queue_size=20
-            )
+            # 【重要】先创建Action Client，再启动spin线程
+            # 这样可以避免ROS2 Foxy的wait set索引越界bug
+            move_group = ActionClient(moveit_node, MoveGroupAction, '/move_action')
+            print("  ✓ Action Client已创建")
             
-            # 创建末端执行器路径发布器
-            ee_path_publisher = rospy.Publisher(
-                '/end_effector_path',
-                Path,
-                queue_size=10
-            )
+            # 启动后台线程持续spin节点（让timer回调能运行）
+            global ros2_executor
+            ros2_executor = rclpy.executors.SingleThreadedExecutor()
+            ros2_executor.add_node(moveit_node)
+            spin_thread = threading.Thread(target=ros2_executor.spin, daemon=True)
+            spin_thread.start()
+            print("  ✓ ROS2 spin线程已启动")
             
-            # 创建末端执行器轨迹标记发布器
-            ee_trail_publisher = rospy.Publisher(
-                '/end_effector_trail',
-                Marker,
-                queue_size=10
-            )
+            # 等待joint_states开始发布
+            import time as time_module
+            time_module.sleep(0.5)
             
-            print("  ✓ MoveIt初始化完成")
-            print(f"  ✓ 规划器: {PLANNER_ID}")
-            print("  ✓ 轨迹可视化发布器已创建")
-            print(f"     - /move_group/display_planned_path (DisplayTrajectory)")
-            print(f"     - /end_effector_path (Path)")
-            print(f"     - /end_effector_trail (Marker with gradient)")
-            print(f"  ✓ 频率配置:")
-            print(f"     - RViz发布: {RVIZ_PUBLISH_RATE}Hz")
-            print(f"     - 命令发送: {COMMAND_SEND_RATE}Hz (高频插值)")
+            # 等待action server可用
+            print("  ⏳ 等待MoveIt2 action server...")
+            
+            # 🔧 关键修复：增加等待时间和重试机制（第二次运行需要更多时间）
+            timeout = 15.0  # 从10秒增加到15秒
+            start_time = time_module.time()
+            retry_count = 0
+            while not move_group.server_is_ready():
+                time_module.sleep(0.2)  # 增加睡眠间隔减少CPU占用
+                elapsed = time_module.time() - start_time
+                if elapsed > timeout:
+                    print("  ⚠️  MoveIt2 action server不可用，将使用SDK模式")
+                    print("  💡 提示: 请确保已运行 ./start_moveit2.sh")
+                    
+                    # 🔧 关键修复：完全清理ROS2资源，避免段错误
+                    # 1. 销毁Action Client
+                    try:
+                        move_group.destroy()
+                    except:
+                        pass
+                    move_group = None
+                    
+                    # 2. 停止spin线程
+                    try:
+                        ros2_executor.shutdown()
+                    except:
+                        pass
+                    ros2_executor = None
+                    
+                    # 3. 销毁节点
+                    try:
+                        moveit_node.destroy_node()
+                    except:
+                        pass
+                    moveit_node = None
+                    
+                    # 4. 关闭ROS2上下文
+                    try:
+                        rclpy.shutdown()
+                    except:
+                        pass
+                    
+                    # 5. 标记MoveIt不可用
+                    MOVEIT_AVAILABLE = False
+                    print("  ℹ️  已完全关闭MoveIt2，使用SDK模式")
+                    break
+                
+                # 每5秒打印一次等待状态
+                if int(elapsed) % 5 == 0 and int(elapsed) > 0 and retry_count != int(elapsed):
+                    retry_count = int(elapsed)
+                    print(f"  ⏳ 仍在等待... ({elapsed:.0f}s/{timeout:.0f}s)")
+            
+            if move_group is not None:
+                print("  ✓ MoveIt2初始化完成")
+                print(f"  ✓ 规划器: {PLANNER_ID}")
+                print(f"  ✓ Action client已连接: /move_action")
         except Exception as e:
             print(f"  ⚠️  MoveIt初始化失败: {e}")
+            import traceback
+            traceback.print_exc()
             print("  将使用SDK模式")
+            
+            # 🔧 关键修复：清理已创建的资源，避免段错误
+            try:
+                if 'move_group' in locals() and move_group is not None:
+                    move_group.destroy()
+                    move_group = None
+            except:
+                pass
+            
+            try:
+                if 'ros2_executor' in locals() and ros2_executor is not None:
+                    ros2_executor.shutdown()
+            except:
+                pass
+            
+            try:
+                if 'moveit_node' in locals() and moveit_node is not None:
+                    moveit_node.destroy_node()
+                    moveit_node = None
+            except:
+                pass
+            
+            # 初始化失败后不使用MoveIt
+            MOVEIT_AVAILABLE = False
     
     # 初始化 Piper Arm
     piper_arm = PiperArm()
@@ -1886,7 +2290,34 @@ def main():
     
     # 清理资源
     if MOVEIT_AVAILABLE:
-        moveit_commander.roscpp_shutdown()
+        try:
+            # 先销毁Action Client
+            if move_group is not None:
+                move_group.destroy()
+                move_group = None
+            
+            # 停止executor（在销毁节点前）
+            if ros2_executor is not None:
+                try:
+                    ros2_executor.shutdown()
+                except:
+                    pass
+            
+            # 再销毁节点
+            if moveit_node is not None:
+                try:
+                    moveit_node.destroy_node()
+                except:
+                    pass
+                moveit_node = None
+            
+            # 最后关闭ROS2
+            try:
+                rclpy.shutdown()
+            except:
+                pass
+        except Exception as e:
+            print(f"  ⚠️  清理资源时出现异常（可忽略）: {e}")
     
     print("\n程序结束")
 

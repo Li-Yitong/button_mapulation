@@ -1,225 +1,147 @@
-# Piper_Moveit
+# Piper_Moveit2
 
 [中文](README.md)
 
-![ubuntu](https://img.shields.io/badge/Ubuntu-20.04-orange.svg)
+![ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange.svg)
 
-|ROS |STATE|
-|---|---|
-|![ros](https://img.shields.io/badge/ROS-noetic-blue.svg)|![Pass](https://img.shields.io/badge/Pass-blue.svg)|
+| PYTHON  | STATE |
+|---------|-------|
+| ![humble](https://img.shields.io/badge/ros-humble-blue.svg) | ![Pass](https://img.shields.io/badge/Pass-blue.svg) |
 
-## 1 Install Moveit Environment
+> Note: If you encounter any issues during installation and usage, refer to Section 5.
 
-> Note: Moveit 1.1.11 is included in the src, no need to download separately.
+## 1 Install Moveit2
 
-Source installation requires wstool and catkin_tools:
+1) **Binary Installation** - [Reference link](https://moveit.ai/install-moveit2/binary/)
+
+    ```bash
+    sudo apt install ros-humble-moveit*
+    ```
+
+2) **Source Compilation** - [Reference link](https://moveit.ai/install-moveit2/source/)
+
+## 2 Environment Setup
+
+After installing Moveit2, install the necessary dependencies:
 
 ```bash
-sudo apt install python3-wstool python3-catkin-tools python3-rosdep
+sudo apt-get install ros-humble-control* ros-humble-joint-trajectory-controller ros-humble-joint-state-* ros-humble-gripper-controllers ros-humble-trajectory-msgs
 ```
 
-## 2 Usage`
+If your system locale is not set to English, configure it as follows:
 
-### 2.1 Run Moveit
+```bash
+echo "export LC_NUMERIC=en_US.UTF-8" >> ~/.bashrc
+source ~/.bashrc
+```
 
-Enter the workspace:
+## 3 Moveit Control for Real Robot Arm
+
+### 3.1 Start `piper_ros`
+
+After configuring [piper_ros](../../README.MD#1-Installation-Method):
 
 ```bash
 cd ~/piper_ros
-source devel/setup.bash
+source install/setup.bash
+bash can_activate.sh can0 1000000
 ```
 
-#### 2.1.1 Run (with gripper)
-
-Start the ROS control node (Gripper control value doubled):
+Start the control node:
 
 ```bash
-roslaunch piper start_single_piper.launch gripper_val_mutiple:=2
+ros2 launch piper start_single_piper.launch.py gripper_val_mutiple:=2
 ```
 
-> The process is successful when the enable confirmation appears.
+### 3.2 Moveit2 Control
 
-Start the moveit
+Start Moveit2:
 
 ```bash
-roslaunch piper_with_gripper_moveit demo.launch
+cd ~/piper_ros
+conda deactivate  # Remove this line if Conda is not installed
+source install/setup.bash
 ```
 
-If you don't want to start rviz, run:
+#### 3.2.1 Run without gripper
 
 ```bash
-roslaunch piper_with_gripper_moveit demo.launch use_rviz:=false
+ros2 launch piper_no_gripper_moveit demo.launch.py
 ```
 
-> The gripper mode is divided into two control groups:
->
->- **Arm control group** contains joints joint1 to joint6
->- **Gripper control group** contains joints joint7 and joint8. The gripper control group uses joint7 for active control, and joint8 for passive control
->- **Piper control group** contains joints joint1 and joint6, joint7 for gripper control
-> The gripper control range is from 0 to 0.035 meters. For the actual gripper open/close distance, multiply by 2, i.e., 0 to 0.07.
-
-|joint_name|     limit(rad)     |    limit(angle)    |     limit(rad/s)   |   limit(rad/s^2)   |
-|----------|     ----------     |     ----------     |     ----------     |     ----------     |
-|joint1    |   [-2.618, 2.618]  |    [-150.0, 150.0] |      [0, 3.0]      |      [0, 5.0]      |
-|joint2    |   [0, 3.14]        |    [0, 180.0]      |      [0, 3.0]      |      [0, 5.0]      |
-|joint3    |   [-2.967, 0]      |    [-170, 0]       |      [0, 3.0]      |      [0, 5.0]      |
-|joint4    |   [-1.745, 1.745]  |    [-100.0, 100.0] |      [0, 3.0]      |      [0, 5.0]      |
-|joint5    |   [-1.22, 1.22]    |    [-70.0, 70.0]   |      [0, 3.0]      |      [0, 5.0]      |
-|joint6    |   [-2.0944, 2.0944]|    [-120.0, 120.0] |      [0, 3.0]      |      [0, 5.0]      |
-
-The control information node is /joint_states:
+#### 3.2.2 Run with gripper
 
 ```bash
-rostopic echo /joint_states
+ros2 launch piper_with_gripper_moveit demo.launch.py
 ```
-
->- The first 6 values are for arm position control
->- The 7th value is for gripper position control
->- The 8th value is 0 and does not participate in control
-
-#### 2.2.2 Run (without gripper)
-
-Start the ROS control node (Gripper control value doubled):
-
-```bash
-roslaunch piper start_single_piper.launch gripper_val_mutiple:=2
-```
-
-> The process is successful when the enable confirmation appears.
-
-Start the moveit
-
-```bash
-roslaunch piper_no_gripper_moveit demo.launch
-```
-
-If you don't want to start rviz, run:
-
-```bash
-roslaunch piper_no_gripper_moveit demo.launch use_rviz:=false
-```
-
-### 2.3 Plan Trajectory and Move
-
-#### 2.3.1 Teach by dragging
 
 ![piper_moveit](../../asserts/pictures/piper_moveit.png)
 
-After adjusting the position, click "Plan & Execute" in the left "MotionPlanning" panel to start planning and moving.
+You can control the robot arm by dragging the arrow at the end effector.
 
-#### 2.3.2 Server-side Control (Joint Angle Control)
+After adjusting the position, click **Plan & Execute** under the **Motion Planning** panel to start motion planning and execution.
 
-Control the arm (terminal input):
+## 4 Moveit Control for Simulated Robot Arm
 
-```bash
-cd piper_ros
-source devel/setup.bash
-```
+### 4.1 Gazebo
 
-Arm joint angle control:
+#### 4.1.1 Run Gazebo
 
-```bash
-rosservice call /joint_moveit_ctrl_arm "joint_states: [0.2,0.2,-0.2,0.3,-0.2,0.5]
-max_velocity: 0.5
-max_acceleration: 0.5" 
-```
+See [piper_gazebo](../piper_sim/README(EN).md#1-gazebo-simulation)
 
-Arm end pose control:
+#### 4.1.2 Moveit Control
 
 ```bash
-rosservice call /joint_moveit_ctrl_endpose "joint_endpose: [0.099091, 0.008422, 0.246447, -0.09079689034052749, 0.7663049838381912, -0.02157924359457128, 0.6356625934370577]
-max_velocity: 0.5
-max_acceleration: 0.5" 
+cd ~/piper_ros
+source install/setup.bash
 ```
 
-Gripper control:
+> Note: The following launch files are **not** the same as `demo.launch.py` used for real robots. They must be run **after Gazebo**; otherwise, the robot model will not appear.
+
+Run with gripper:
 
 ```bash
-rosservice call /joint_moveit_ctrl_gripper "gripper: 0.035
-max_velocity: 0.5
-max_acceleration: 0.5" 
+ros2 launch piper_with_gripper_moveit piper_moveit.launch.py
 ```
 
-Control the arm and gripper in joint motion:
+Run without gripper:
 
 ```bash
-rosservice call /joint_moveit_ctrl_piper "joint_states: [0.2,0.2,-0.2,0.3,-0.2,0.5]
-gripper: 0.035
-max_velocity: 0.5
-max_acceleration: 0.5" 
+ros2 launch piper_no_gripper_moveit piper_moveit.launch.py
 ```
 
-#### 2.3.3 Client-side Control (terminal input)
+### 4.2 Mujoco
+
+#### 4.2.1 Moveit Control (Start Moveit First)
+
+Same as [3.2 Moveit2 Control](#32-moveit2-control)
+
+#### 4.2.2 Run Mujoco
+
+See [piper_mujoco](../piper_sim/README(EN).md#2-mujoco-simulation)
+
+Note: **You can close it using Ctrl+C+\\**
+
+## 5 Potential Issues
+
+### 5.1 Error when launching Gazebo: URDF not loaded, causing end effector and base to overlap
+
+1. Check whether `install` contains the `piper_description` folder with a `config` directory, and ensure it includes the configuration files from `src/piper/piper_description/config`.
+
+2. If `install` is missing the `urdf` folder, check if `src/piper/piper_description/urdf/piper_description_gazebo.xacro` (line 644) has the correct paths. If the issue persists, change the paths to absolute paths.
+
+### 5.2 Error when running `demo.launch.py`
+
+**Error:** Expected a `double`, but received a `string`.  
+**Solution:** Run the following command:
 
 ```bash
-cd piper_ros
-source devel/setup.bash
-rosrun moveit_ctrl joint_moveit_ctrl.py
+echo "export LC_NUMERIC=en_US.UTF-8" >> ~/.bashrc
+source ~/.bashrc
 ```
 
-> Speed and acceleration are controlled using percentage speed, ranging from 0 to 1, with the default value being 0.5. The maximum arm speed is 3(rad/s). You can change the `max_velocity=0.5`, `max_acceleration=0.5` parameters in the [joint_moveit_ctrl](../piper_moveit/moveit_ctrl/scripts/joint_moveit_ctrl.py) control function.
-> Modify `arm_position`, `gripper_position` in [joint_moveit_ctrl](../piper_moveit/moveit_ctrl/scripts/joint_moveit_ctrl.py) to control joint movement, in radians.
+Alternatively, set `LC_NUMERIC=en_US.UTF-8` before launching Moveit:
 
-#### 2.3.4 Moveit Class Control (Joint Angle Control)
-
-> This part can be added in the [joint_moveit_ctrl](../piper_moveit/moveit_ctrl/scripts/joint_moveit_ctrl.py) and applied.
-
-```python
-#!/usr/bin/env python3
-
-import rospy
-import moveit_commander
-
-def move_robot():
-    # Initialize MoveIt! components
-    moveit_commander.roscpp_initialize([])
-    move_group = moveit_commander.MoveGroupCommander("gripper")  # Modify to "arm", "gripper", or "piper" as needed
-
-    # Get current joint values
-    joint_goal = move_group.get_current_joint_values()
-    joint_goal[0] = 0.0  # For arm, joint_goal has length 6, for gripper, it has length 1, for piper, it has length 7
-    # joint_goal[1] = 0.0
-    # joint_goal[2] = 0.0
-    # joint_goal[3] = 0.0
-    # joint_goal[4] = 0.0
-    # joint_goal[5] = 0.0
-    # joint_goal[6] = 0.0 # For Piper planning group, this is for gripper control
-
-    # Set and execute the target
-    move_group.set_joint_value_target(joint_goal)
-    success = move_group.go(wait=True)
-    rospy.loginfo(f"Movement success: {success}")
-    rospy.loginfo(f"joint_value: {move_group.get_current_joint_values()}")
-
-    moveit_commander.roscpp_shutdown()
-
-if __name__ == "__main__":
-    try:
-        move_robot()
-    except rospy.ROSInterruptException:
-        pass
+```bash
+LC_NUMERIC=en_US.UTF-8 ros2 launch piper_moveit_config demo.launch.py
 ```
-
-## 3 Moveit Control for Simulated Arm
-
-Note: **The gripper version must correspond.**
-
-### 3.1 Gazebo
-
-#### 3.1.1 Run Gazebo
-
-See [piper_gazebo](../piper_sim/README(EN).md#21-gazebo-simulation)
-
-#### 3.1.2 Moveit Control
-
-Same as [2.2 Run Moveit](#22-run-moveit)
-
-### 3.2 Mujoco
-
-#### 3.2.1 Run Mujoco
-
-See [piper_mujoco](../piper_sim/README(EN).md#22-mujoco-simulation)
-
-#### 3.2.2 Moveit Control
-
-Same as [2.2 Run Moveit](#22-run-moveit)

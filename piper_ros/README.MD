@@ -1,46 +1,21 @@
-# Piper 机械臂ROS(noetic)
-
-[EN](README(EN).md)
-
+# agx 机械臂(foxy)
 ![ubuntu](https://img.shields.io/badge/Ubuntu-20.04-orange.svg)
 
-|ROS |STATE|
+[EN](README(EN).MD)
+
+Test:
+
+|PYTHON |STATE|
 |---|---|
-|![ros](https://img.shields.io/badge/ROS-noetic-blue.svg)|![Pass](https://img.shields.io/badge/Pass-blue.svg)|
+|![foxy](https://img.shields.io/badge/ros-foxy-blue.svg)|![Pass](https://img.shields.io/badge/Pass-blue.svg)|
 
-```shell
-git clone https://github.com/agilexrobotics/piper_ros.git
-```
+## 安装方法
 
-```shell
-cd piper_ros
-git checkout noetic
-```
-
-|说明 |文档|
-|---|---|
-|Moveit|[Moveit README](src/piper_moveit/README.md)|
-|仿真|[仿真 README](src/piper_sim/README.md)|
-
-## 0 注意URDF版本
-
-S-V1.6-3固件版本以前的DH参数为各关节接触限位处为初始坐标得到
-
-S-V1.6-3固件版本以后的DH参数将j2和j3的坐标系偏移了2度
-
-现默认URDF为后者
-
-|firmware version |urdf|
-|---|---|
-|current version < S-V1.6-3|`piper_description_old.urdf`|
-|current version >= S-V1.6-3|`piper_description.urdf`|
-
-## 1 安装方法
-
-### 1.1 安装依赖
+### 安装依赖
 
 ```shell
 pip3 install python-can
+pip3 install scipy
 ```
 
 ```shell
@@ -48,31 +23,20 @@ pip3 install piper_sdk
 ```
 
 ```shell
-source /opt/ros/noetic/setup.bash
-sudo apt-get install python3-wstool python3-catkin-tools python3-rosdep ros-noetic-ruckig
-sudo apt-get install ros-noetic-eigen-stl-containers ros-noetic-geometric-shapes ros-noetic-pybind11-catkin
-sudo apt-get install ros-noetic-moveit-resources-panda-moveit-config ros-noetic-ompl ros-noetic-warehouse-ros ros-noetic-eigenpy ros-noetic-rosparam-shortcuts
-sudo apt-get install ros-noetic-moveit-msgs ros-noetic-srdfdom
+sudo apt install ros-$ROS_DISTRO-ros2-control
+sudo apt install ros-$ROS_DISTRO-ros2-controllers
+sudo apt install ros-$ROS_DISTRO-controller-manager
 ```
 
-编译
+## 快速使用
 
-注意：如果由于moveit编译报错无法解决，可以直接通过`sudo apt install ros-$ROS_DISTRO-moveit`来安装官方源的moveit，然后删掉`src/piper_moveit/moveit-1.1.11`这个目录，或者在该路径下创建名字为`CATKIN_IGNORE`的空文件即可让ros在编译期间忽略这个包，然后删掉`build/`和`devel/`路径重新编译。
-
-```shell
-cd piper_ros
-catkin_make
-```
-
-## 2 快速使用
-
-### 2.1 使能can模块
+### 使能can模块
 
 首先需要设置好shell脚本参数
 
-#### 2.1.1 单条机械臂
+#### 单条机械臂
 
-##### 1）pc只插入一个usb转can模块
+##### pc只插入一个usb转can模块
 
 - **此处使用`can_activate.sh`脚本**
 
@@ -82,7 +46,7 @@ catkin_make
 bash can_activate.sh can0 1000000
 ```
 
-##### 2）pc插入多个usb转can模块
+##### pc插入多个usb转can模块
 
 - **此处使用`can_activate.sh`脚本**
 
@@ -106,15 +70,57 @@ ps:**一般第一个插入的can模块会默认是can0，如果没有查询到ca
 bash can_activate.sh can_piper 1000000 "1-2:1.0"
 ```
 
-ps:**此处的意思是，1-2:1.0硬件编码的usb端口插入的can设备，名字被重命名为can_piper,波特率为1000000，并激活**
+ps:**此处的意思是，1-2:1.0硬件编码的usb端口插入的can设备，名字被重命名为can_piper，波特率为1000000，并激活**
 
 然后执行`ifconfig`查看是否有`can_piper`，如果有则can模块设置成功
 
-### 2.2 运行节点
+#### 想要同时激活多个can模块
 
-#### 2.2.1 单机械臂
+- **此处使用`can_config.sh`脚本**
 
-节点名`piper_ctrl_single_node.py`
+在`can_config.sh`中，`EXPECTED_CAN_COUNT`参数为想要激活的can模块数量,现在假设为2
+
+然后can模块中的其中一个单独插入PC，执行
+
+```shell
+sudo ethtool -i can0 | grep bus
+```
+
+并记录下`bus-info`的数值例如`1-2:1.0`
+
+接着插入下一个can模块，注意不可以与上次can模块插入的usb口相同，然后执行
+
+```shell
+sudo ethtool -i can1 | grep bus
+```
+
+ps:**一般第一个插入的can模块会默认是can0，第二个为can1，如果没有查询到can可以使用`bash find_all_can_port.sh`来查看刚才usb地址对应的can名称**
+
+假设上面的操作记录的`bus-info`数值分别为`1-2:1.0`、`1-4:1.0`
+
+则将下面的`USB_PORTS["1-9:1.0"]="can_left:1000000"`的中括号内部的双引号内部的参数换为`1-2:1.0`
+
+另一个同理
+
+`USB_PORTS["1-5:1.0"]="can_right:1000000"` -> `USB_PORTS["1-4:1.0"]="can_right:1000000"`
+
+ps:**此处的意思是，1-2:1.0硬件编码的usb端口插入的can设备，名字被重命名为can_left，波特率为1000000，并激活**
+
+然后执行`bash can_config.sh`,查看终端输出是否激活成功
+
+然后执行`ifconfig`查看是不是有`can_left`和`can_right`，如果有则can模块设置成功
+
+### 运行节点
+
+编译
+
+```shell
+colcon build
+```
+
+#### 单个机械臂
+
+节点名`piper_single_ctrl`
 
 param
 
@@ -129,146 +135,89 @@ rviz_ctrl_flag:是否使用rviz来发送关节角消息，True则接收rviz发�
 #由于rviz中的joint7范围是[0,0.04]，而真实夹爪行程为0.08m，打开rviz控制后会将rviz发出的joint7乘2倍
 ```
 
-`start_single_piper.launch`如下:
+有两个启动单臂的launch文件`start_single_piper_rviz.launch.py` 和 `start_single_piper.launch.py`
 
-```xml
-<launch>
-  <arg name="can_port" default="can0" />
-  <arg name="auto_enable" default="true" />
-  <arg name="gripper_val_mutiple" default="1" />
-  <!-- <include file="$(find piper_description)/launch/display_xacro.launch"/> -->
-  <!-- 启动机械臂节点 -->
-  <node name="piper_ctrl_single_node" pkg="piper" type="piper_ctrl_single_node.py" output="screen">
-    <param name="can_port" value="$(arg can_port)" />
-    <param name="auto_enable" value="$(arg auto_enable)" />
-    <param name="gripper_val_mutiple" value="$(arg gripper_val_mutiple)" />
-    <!-- <param name="rviz_ctrl_flag" value="true" /> -->
-    <param name="girpper_exist" value="true" />
-    <remap from="joint_ctrl_single" to="/joint_states" />
-  </node>
-</launch>
-```
+前者是可以一起将rviz启动，然后可以拖动滑动条控制机械臂
 
-`start_single_piper_rviz.launch`如下:
-
-```xml
-<launch>
-  <arg name="can_port" default="can0" />
-  <arg name="auto_enable" default="true" />
-  <include file="$(find piper_description)/launch/piper_with_gripper/display_xacro.launch"/>
-  <!-- 启动机械臂节点 -->
-  <node name="piper_ctrl_single_node" pkg="piper" type="piper_ctrl_single_node.py" output="screen">
-    <param name="can_port" value="$(arg can_port)" />
-    <param name="auto_enable" value="$(arg auto_enable)" />
-    <param name="gripper_val_mutiple" value="2" />
-    <!-- <param name="rviz_ctrl_flag" value="true" /> -->
-    <param name="girpper_exist" value="true" />
-    <remap from="joint_ctrl_single" to="/joint_states" />
-  </node>
-</launch>
-```
-
-##### （1）启动控制节点
-
-提供几种不同的启动方式，启动的都是相同节点
+启动控制节点
 
 ```shell
 # 启动节点
-roscore
-rosrun piper piper_ctrl_single_node.py _can_port:=can0 _mode:=0
-# 或，使用launch 启动节点
-roslaunch piper start_single_piper.launch can_port:=can0 auto_enable:=true
-# 或，直接运行launch，会以默认参数运行
-roslaunch piper start_single_piper.launch
-# 也可以用rviz开启控制,需要更改的参数如上述
-roslaunch piper start_single_piper_rviz.launch
+ros2 run piper piper_single_ctrl --ros-args -p can_port:=can0 -p auto_enable:=false -p gripper_exist:=true -p rviz_ctrl_flag:=true
+# 启动launch
+ros2 launch piper start_single_piper.launch.py can_port:=can0 auto_enable:=false gripper_exist:=false rviz_ctrl_flag:=true
+# 或，会以默认参数运行
+ros2 launch piper start_single_piper.launch.py
+# 也可以用rviz开启控制,需要更改的参数如上
+ros2 launch piper start_single_piper_rviz.launch.py
 ```
 
-如果只是单独启动了控制节点，没有启动rviz
-
-`rostopic list`
+`ros2 topic list`
 
 ```shell
 /arm_status #机械臂状态，详见下文
 /enable_flag #使能标志位，发送给节点，发送true用来使能
-/end_pose #机械臂末端位姿状态反馈，四元数
-/end_pose_euler #机械臂末端位姿状态反馈，欧拉角(为自定义消息)
+/end_pose #机械臂末端位姿状态反馈
 /joint_states #订阅关节消息，给这个消息发送关节位置能控制机械臂运动
 /joint_states_single #机械臂关节状态反馈
 /pos_cmd #末端控制消息
 ```
 
-`rosservice list`
+ros2 service list
 
 ```shell
 /enable_srv #机械臂使能服务端
-/go_zero_srv #机械臂归零服务
-/gripper_srv #机械臂夹爪控制服务
-/reset_srv #机械臂重置服务
-/stop_srv #机械臂停止服务
 ```
 
-##### （2）使能机械臂
+使能机械臂
 
 ```shell
 # call 服务端
-rosservice call /enable_srv "enable_request: true"
+ros2 service call /enable_srv piper_msgs/srv/Enable enable_request:\ true\ 
 # pub topic
-rostopic pub /enable_flag std_msgs/Bool "data: true"
+ros2 topic pub /enable_flag std_msgs/msg/Bool data:\ true\ 
 ```
 
-##### （3）失能机械臂
+失能机械臂
 
 ```shell
 # call 服务端
-rosservice call /enable_srv "enable_request: false"
+ros2 service call /enable_srv piper_msgs/srv/Enable enable_request:\ false\ 
 # pub topic
-rostopic pub /enable_flag std_msgs/Bool "data: false"
+ros2 topic pub /enable_flag std_msgs/msg/Bool data:\ false\ 
 ```
 
-##### （4）发布关节消息
+发布关节消息
 
 注意，机械臂会抬起，请确保机械臂工作范围内无障碍
 
-```shell
-rostopic pub /joint_states sensor_msgs/JointState "header:
-  seq: 0
-  stamp: {secs: 0, nsecs: 0}
-  frame_id: ''
-name: ['']
-position: [0.2,0.2,-0.2,0.3,-0.2,0.5,0.01]
-velocity: [0,0,0,0,0,0,10]
-effort: [0,0,0,0,0,0,0.5]" 
-```
-
-##### （5）停止机械臂，注意机械臂会以一个恒定阻尼落下
+机械臂会以默认速度的百分之10运动，夹爪力矩设定0.5N，位置如下
 
 ```shell
-rosservice call /stop_srv
+ros2 topic pub /joint_states sensor_msgs/msg/JointState "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'piper_single'}, name: ['joint1', 'joint2','joint3','joint4','joint5','joint6','joint7'], position: [0.2,0.2,-0.2,0.3,-0.2,0.5,0.01], velocity: [0,0,0,0,0,0,10], effort: [0,0,0,0,0,0,0.5]}"
+
 ```
 
-##### （6）重置机械臂，注意机械臂会立刻掉电落下
+## 注意事项
 
-```shell
-rosservice call /reset_srv
-```
+- 需要先激活can设备，并且设置正确的波特率，才可以读取机械臂消息或者控制机械臂
+- 如果出现
 
-##### （7）令机械臂归零
+  ```shell
+  使能状态: False
+  <class 'can.exceptions.CanError'> Message NOT sent
+  <class 'can.exceptions.CanError'> Message NOT sent
+  ```
 
-- 如果机械臂为mit模式，将`is_mit_mode`置为`true`
-- 如果机械臂不为mit模式(位置速度控制模式)，将`is_mit_mode`置为`false`
+  说明机械臂没有与can模块连同，拔插usb后，重新启动机械臂，再激活can模块，然后尝试重新启动节点
 
-```shell
-rosservice call /go_zero_srv "is_mit_mode: false"
-rosservice call /go_zero_srv "is_mit_mode: true"
-```
+- 如果打开了自动使能，尝试使能5s没有成功后，会自动退出程序
 
-### 2.3 piper自定义消息
+### piper自定义消息
 
 ros功能包`piper_msgs`
 
 机械臂自身状态反馈消息，对应can协议中`id=0x2A1`的反馈消息
-说明
 
 `PiperStatusMsg.msg`
 
@@ -338,40 +287,142 @@ bool communication_status_joint_5//5号关节角度超限位（0：正常 1：�
 bool communication_status_joint_6//6号关节角度超限位（0：正常 1：异常）
 ```
 
-机械臂末端位姿控制，注意：有些奇异点无法到达
+机械臂末端位姿控制，注意:有些奇异点无法到达
 
 `PosCmd.msg`
 
 ```c
-// 单位：m
 float64 x
 float64 y
 float64 z
-// 单位：rad
 float64 roll
 float64 pitch
 float64 yaw
 float64 gripper
-// 暂为无效参数
 int32 mode1
 int32 mode2
 ```
 
-## 3 注意事项
+## 使用仿真
 
-- 需要先激活can设备，并且设置正确的波特率，才可以读取机械臂消息或者控制机械臂
-- 如果出现
+打开rviz
 
-  ```shell
-  使能状态: False
-  <class 'can.exceptions.CanError'> Message NOT sent
-  <class 'can.exceptions.CanError'> Message NOT sent
-  ```
+```shell
+ros2 launch piper_description display_xacro.launch.py
+```
 
-  说明机械臂没有与can模块连通，检查绿色端子是否紧连，拔插can模块usb，重新上电机械臂，再激活can模块，然后尝试重新启动节点
+运行后会发布`/joint_states`,可以通过`ros2 topic echo /joint_states` 查看
 
-- 如果打开了自动使能，尝试使能5s没有成功后，会自动退出程序
+同时会弹出两个页面如下，滑动条数值对应`/joint_states`数值，拖动滑动条可以改变其数值，rviz中的模型也会随动
+
+![ ](./asserts/pictures/rviz_display.jpg)
+
+### gazebo
+
+coming...
 
 ## Q&A
 
-[Q&A](Q&A.MD)
+1. 出现
+
+```shell
+colcon build
+Starting >>> piper   
+Starting >>> piper_description
+Starting >>> piper_msgs
+Finished <<< piper [0.31s]                                                                                                              
+--- stderr: piper_description                                                                                            
+CMake Error at CMakeLists.txt:5 (find_package):
+  By not providing "Findament_cmake.cmake" in CMAKE_MODULE_PATH this project
+  has asked CMake to find a package configuration file provided by
+  "ament_cmake", but CMake did not find one.
+
+  Could not find a package configuration file provided by "ament_cmake" with
+  any of the following names:
+
+    ament_cmakeConfig.cmake
+    ament_cmake-config.cmake
+
+  Add the installation prefix of "ament_cmake" to CMAKE_PREFIX_PATH or set
+  "ament_cmake_DIR" to a directory containing one of the above files.  If
+  "ament_cmake" provides a separate development package or SDK, be sure it
+  has been installed.
+
+
+---
+Failed   <<< piper_description [0.45s, exited with code 1]
+Aborted  <<< piper_msgs [0.45s]
+
+Summary: 1 package finished [0.55s]
+  1 package failed: piper_description
+  2 packages aborted: piper_msgs
+  3 packages had stderr output: piper_description piper_msgs
+```
+
+```shell
+source /opt/ros/foxy/setup.bash
+```
+
+2. 
+
+```shell
+Starting >>> piper   
+Starting >>> piper_description
+Starting >>> piper_msgs
+Finished <<< piper [0.33s]                                                                                                              
+Finished <<< piper_description [0.42s]                                                                                     
+--- stderr: piper_description                                                               
+CMake Error at CMakeLists.txt:7 (find_package):
+  By not providing "Findcontroller_manager.cmake" in CMAKE_MODULE_PATH this
+  project has asked CMake to find a package configuration file provided by
+  "controller_manager", but CMake did not find one.
+
+  Could not find a package configuration file provided by
+  "controller_manager" with any of the following names:
+
+    controller_managerConfig.cmake
+    controller_manager-config.cmake
+
+  Add the installation prefix of "controller_manager" to CMAKE_PREFIX_PATH or
+  set "controller_manager_DIR" to a directory containing one of the above
+  files.  If "controller_manager" provides a separate development package or
+  SDK, be sure it has been installed.
+
+
+---
+Failed   <<< piper_description [0.80s, exited with code 1]
+Aborted  <<< piper_msgs [3.28s]                               
+
+Summary: 2 packages finished [3.38s]
+  1 package failed: piper_description
+  1 package aborted: piper_msgs
+  1 package had stderr output: piper_description
+```
+
+```shell
+sudo apt install ros-$ROS_DISTRO-ros2-control
+sudo apt install ros-$ROS_DISTRO-ros2-controllers
+sudo apt install ros-$ROS_DISTRO-controller-manager
+```
+
+3. 
+
+```shell
+ "package 'joint_state_publisher_gui' not found
+```
+
+```shell
+sudo apt install ros-$ROS_DISTRO-joint-state-publisher-gui
+```
+
+4. 
+
+```shell
+sudo apt install ros-$ROS_DISTRO-robot-state-publisher
+```
+
+5. 
+
+```shell
+sudo apt install ros-foxy-xacro
+```
