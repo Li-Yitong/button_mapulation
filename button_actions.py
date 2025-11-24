@@ -74,8 +74,8 @@ PI = math.pi
 factor = 1000 * 180 / PI
 # === 目标位姿配置 (基座坐标系) ===
 # 位置 (单位：米)
-TARGET_X = 0.35  # X坐标 (降低以保证可达性)
-TARGET_Y = 0.00  # Y坐标
+TARGET_X = 0.25  # X坐标 (降低以保证可达性)
+TARGET_Y = 0.0  # Y坐标
 TARGET_Z = 0.30  # Z坐标 (提高以保证可达性)
 
 # 姿态 (单位：弧度) - 相对于默认姿态（末端朝前）的旋转
@@ -92,10 +92,17 @@ USE_6D_POSE = True   # True=使用6D位姿(含姿态), False=仅使用位置(末
 # 这是正常现象，不影响按钮操作的执行。如果需要更高精度，请考虑使用MoveIt的笛卡尔路径规划。
 
 # === 动作类型选择 ===
-ACTION_TYPE = 'knob'  # 'toggle'/'plugin'/'push'/'knob'
+ACTION_TYPE = 'plugin'  # 'toggle'/'plugin'/'push'/'knob'
 
 # === 控制模式 ===
 USE_MOVEIT = True  # 启动脚本自动设置
+
+# === 精调与调试开关 ===
+ENABLE_CARTESIAN_FINE_TUNE = False    # True=MoveIt后允许笛卡尔微调, False=严格使用MoveIt结果
+CARTESIAN_FINE_TUNE_THRESHOLD = 0.008  # 超过该距离(米)才触发微调
+DEBUG_IK_SOLVER = False               # True=打印每个IK求解细节
+AUTO_FINE_TUNE_ON_FAILURE = True      # True=MoveIt多次尝试后仍超差时自动触发笛卡尔精调
+AUTO_FINE_TUNE_SPEED = 12             # 自动精调的默认SDK速度
 
 # === Plugin (插拔连接器) 配置 ===
 PLUGIN_GRIPPER_OPEN = 60000     # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
@@ -116,22 +123,37 @@ TOGGLE_TOGGLE_SPEED = 30        # 拨动速度 (单位: 无量纲, 范围: 0~100
 
 # === Push (按压按钮) 配置 ===
 PUSH_GRIPPER_CLOSE = 0          # 夹爪闭合值 (单位: 0.001mm, 范围: 0~70000, 0=完全闭合)
-PUSH_INSERT_DEPTH = 0.002        # 按压深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
-PUSH_HOLD_TIME = 1              # 保持时间 (单位: 秒, 范围: 0~无限, 建议: 1~5)
-PUSH_PRESS_SPEED = 30           # 按压速度 (单位: 无量纲, 范围: 0~100, 建议: 20~50慢速按压)
+PUSH_INSERT_DEPTH = 0.008        # 按压深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
+PUSH_HOLD_TIME = 0.5              # 保持时间 (单位: 秒, 范围: 0~无限, 建议: 1~5)
+PUSH_PRESS_SPEED = 90           # 按压/回撤速度 (单位: 无量纲, 0~100)
+
+# === 笛卡尔平滑执行全局配置 ===
+CARTESIAN_MIN_WAYPOINTS = 6             # 参考ROS1实现，短行程只需几个分段
+CARTESIAN_MAX_WAYPOINTS = 50            # 最多waypoints，避免规划出上百点
+CARTESIAN_WAYPOINT_STEP = 0.005         # waypoint目标间距 (米)，默认5mm≈每厘米2点
+CARTESIAN_EEF_STEP = 0.01               # compute_custom_cartesian_path的细分步长 (米)
+CARTESIAN_SPEED_LIMIT = 100              # SDK笛卡尔执行默认最大速度 (0~100)
+CARTESIAN_HIGH_SPEED_LIMIT = 100        # 特殊场景的高速上限 (push/plugin)
+CARTESIAN_INTERPOLATION_PROFILE = 'cubic'  # 插值速度曲线: 'linear' 或 'cubic'
+CARTESIAN_HIGH_ACCEL_PROFILE = 'impulse'   # 高加速度场景使用的自定义曲线
 
 # === Knob (旋转旋钮) 配置 ===
 KNOB_GRIPPER_OPEN = 45000       # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
-KNOB_INSERT_DEPTH = 0.003        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
+KNOB_INSERT_DEPTH = 0.02        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
 KNOB_GRIPPER_HOLD = 8000       # 闭合夹持宽度 (单位: 0.001mm, 范围: 0~70000, 建议: 15000~35000)
 KNOB_ROTATION_ANGLE = 45        # 旋转角度 (单位: 度, 范围: -360~360, 建议: 30~180)
 KNOB_ROTATION_DIRECTION = 'ccw'  # 旋转方向: 'cw'=顺时针(右旋), 'ccw'=逆时针(左旋)
-KNOB_INSERT_SPEED = 80          # 插入速度 (单位: 无量纲, 范围: 0~100)
+KNOB_INSERT_SPEED = 100          # 插入速度 (单位: 无量纲, 范围: 0~100)
 KNOB_ROTATION_SPEED = 60        # 旋转速度 (单位: 无量纲, 范围: 0~100)
 
 # === 通用速度配置 ===
 NORMAL_SPEED = 100              # 正常移动速度 (单位: 无量纲, 范围: 0~100, SDK硬限制)
 FAST_SPEED = 100                # 快速移动速度 (单位: 无量纲, 范围: 0~100, SDK硬限制)
+
+# === MoveIt 精度与重试策略 ===
+MOVEIT_POSITION_TOLERANCE = 0.002     # 第一阶段允许的最大位置误差 (米)
+MOVEIT_MAX_REPLAN_ATTEMPTS = 1         # 允许额外重试的次数（总尝试 = 尝试次数 + 1）
+MOVEIT_JOINT_TOLERANCE = 0.001          # 关节约束容差 (弧度)，约1.15°
 
 
 
@@ -158,6 +180,7 @@ MOVEIT_AVAILABLE = False
 move_group = None
 moveit_node = None  # ROS2 node for MoveIt2
 ros2_executor = None  # ROS2 executor for spinning
+ros2_spin_thread = None  # 背景spin线程
 ROS2_FOXY_DETECTED = False
 
 try:
@@ -883,8 +906,8 @@ def control_arm_moveit(joints, speed=50, gripper_value=None):
             jc = JointConstraint()
             jc.joint_name = joint_names[i]
             jc.position = float(angle)
-            jc.tolerance_above = 0.1
-            jc.tolerance_below = 0.1
+            jc.tolerance_above = MOVEIT_JOINT_TOLERANCE
+            jc.tolerance_below = MOVEIT_JOINT_TOLERANCE
             jc.weight = 1.0
             constraints.joint_constraints.append(jc)
         
@@ -1187,6 +1210,62 @@ def control_arm(joints, speed=50, use_moveit=False, gripper_value=None):
         return control_arm_sdk(joints, speed, gripper_value)
 
 
+def move_to_pose_with_retries(target_pose, joints_target, speed=NORMAL_SPEED, gripper_value=None, description="MoveIt到位"):
+    """第一阶段到位：确保MoveIt完成并验证误差，不达标则有限次重试"""
+    global piper_arm
+
+    target_xyz = target_pose[:3, 3]
+    moveit_enabled = USE_MOVEIT and MOVEIT_AVAILABLE and move_group is not None
+    max_attempts = MOVEIT_MAX_REPLAN_ATTEMPTS + 1 if moveit_enabled else 1
+    last_error = float('inf')
+
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            print(f"  [{description}] ↻ 重新规划第{attempt}次，消除残余误差...")
+
+        if not control_arm(joints_target, speed, moveit_enabled, gripper_value):
+            print(f"  ❌ {description} 执行失败，跳过本次尝试")
+            continue
+
+        actual_joints = get_current_joints()
+        actual_pose = piper_arm.forward_kinematics(actual_joints)
+        actual_xyz = actual_pose[:3, 3]
+        last_error = np.linalg.norm(actual_xyz - target_xyz)
+        print(f"  [{description}] 实际到达: XYZ=({actual_xyz[0]:.3f}, {actual_xyz[1]:.3f}, {actual_xyz[2]:.3f}), 误差={last_error*100:.2f}cm")
+
+        if not moveit_enabled or last_error <= MOVEIT_POSITION_TOLERANCE:
+            return True, last_error
+
+        # 需要再次尝试，重新计算IK作为种子
+        new_joints = compute_ik_moveit2(target_pose, timeout=5.0, attempts=10, use_current_as_seed=True)
+        if not new_joints:
+            print("  ⚠️ 重新计算IK失败，无法继续更精细的重试")
+            break
+        joints_target = new_joints
+
+    print(f"  ⚠️ {description} 在 {max_attempts} 次尝试后误差仍为 {last_error*100:.2f}cm (> {MOVEIT_POSITION_TOLERANCE*100:.1f}cm)")
+    if AUTO_FINE_TUNE_ON_FAILURE:
+        print(f"  ↪ MoveIt仍未达标，启动笛卡尔精调恢复 ({description})...")
+        fine_tune_joints = precise_move_to_pose(
+            target_pose,
+            speed=AUTO_FINE_TUNE_SPEED,
+            description=f"{description}笛卡尔精调",
+            force=True
+        )
+        if fine_tune_joints:
+            actual_joints = get_current_joints()
+            actual_pose = piper_arm.forward_kinematics(actual_joints)
+            actual_xyz = actual_pose[:3, 3]
+            residual_error = np.linalg.norm(actual_xyz - target_xyz)
+            if residual_error <= MOVEIT_POSITION_TOLERANCE:
+                print(f"  ✓ 精调完成，误差降至 {residual_error*100:.2f}cm (<= {MOVEIT_POSITION_TOLERANCE*100:.1f}cm)")
+                return True, residual_error
+            print(f"  ⚠️ 精调后误差仍为 {residual_error*100:.2f}cm")
+        else:
+            print("  ❌ 笛卡尔精调失败，无法纠正误差")
+    return False, last_error
+
+
 def get_current_joints():
     """获取当前关节角度"""
     global piper
@@ -1278,7 +1357,7 @@ def create_target_transform(x, y, z, roll=0.0, pitch=0.0, yaw=0.0, use_6d=False)
     return T
 
 
-def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10):
+def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10, use_current_as_seed=True):
     """
     使用高精度IK求解（piper_arm数值优化版本）
     
@@ -1286,6 +1365,7 @@ def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10):
         target_pose: 4x4齐次变换矩阵或Pose消息
         timeout: 保留参数（兼容性）
         attempts: 保留参数（兼容性）
+        use_current_as_seed: 是否使用当前关节角度作为种子点（提高解的一致性）
     
     返回:
         关节角度列表 (6个元素) 或 None（失败时）
@@ -1294,8 +1374,21 @@ def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10):
     
     # 直接使用piper_arm的高精度数值优化IK
     if isinstance(target_pose, np.ndarray):
+        # 🔧 修复1: 使用当前关节角度作为种子点，确保IK解的一致性
+        initial_guess = None
+        if use_current_as_seed:
+            try:
+                initial_guess = get_current_joints()
+            except:
+                initial_guess = None
+        
         # 使用优化版本的IK（解析解 + Levenberg-Marquardt优化）
-        result = piper_arm.inverse_kinematics_refined(target_pose, max_iterations=50, tolerance=1e-6)
+        result = piper_arm.inverse_kinematics_refined(
+            target_pose, 
+            initial_guess=initial_guess,
+            max_iterations=50, 
+            tolerance=1e-6
+        )
         if result is not False and result is not None:
             return result
         else:
@@ -1395,7 +1488,138 @@ def compute_custom_cartesian_path(start_joints, waypoint_poses, eef_step=0.01):
     return trajectory_points, fraction
 
 
-def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientation=True):
+def execute_sdk_cartesian_trajectory(cartesian_traj, speed, label="SDK平滑执行", extra_delay=0.3, profile=None):
+    """
+    使用SDK以高密度插值和平滑加减速执行笛卡尔轨迹
+    """
+    global piper
+    if not cartesian_traj or len(cartesian_traj) < 2:
+        print("  ⚠️ 笛卡尔轨迹点不足，无法执行SDK平滑轨迹")
+        return False
+
+    profile = (profile or 'linear').lower()
+
+    print(f"  [{label}] 笛卡尔轨迹 ({len(cartesian_traj)}个点)...")
+    piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
+
+    # 高密度插值：在相邻轨迹点之间插入更多点以获得更平滑的曲线
+    interpolated_trajectory = []
+    for idx in range(len(cartesian_traj)):
+        interpolated_trajectory.append(cartesian_traj[idx])
+        if idx < len(cartesian_traj) - 1:
+            current_j = cartesian_traj[idx][0]
+            next_j = cartesian_traj[idx + 1][0]
+            for alpha in [0.25, 0.5, 0.75]:
+                interp_joints = [
+                    current_j[i] + alpha * (next_j[i] - current_j[i])
+                    for i in range(6)
+                ]
+                interpolated_trajectory.append((interp_joints, 0.0))
+
+    print(f"  ✓ 高密度插值: {len(cartesian_traj)}个点 → {len(interpolated_trajectory)}个点")
+
+    total_interp_points = len(interpolated_trajectory)
+    accel_points = min(15, total_interp_points // 3)
+    decel_points = min(15, total_interp_points // 3)
+
+    base_delay = 0.02
+    max_delay = 0.05
+
+    for idx, (joints, _) in enumerate(interpolated_trajectory):
+        joints_int = [int(joints[i] * factor) for i in range(6)]
+        joints_int[4] = max(-70000, joints_int[4])
+        piper.JointCtrl(*joints_int)
+
+        if profile == 'cubic' and total_interp_points > 1:
+            norm = idx / (total_interp_points - 1)
+            velocity_scale = 3 * norm ** 2 - 2 * norm ** 3  # ease-in-out
+            delay = base_delay + (max_delay - base_delay) * (1 - velocity_scale)
+        elif profile == 'impulse':
+            impulse_accel_points = max(3, total_interp_points // 15)
+            impulse_decel_points = impulse_accel_points
+            if idx < impulse_accel_points:
+                progress = idx / impulse_accel_points if impulse_accel_points > 0 else 1.0
+                delay = 0.03 - 0.015 * progress
+            elif idx >= total_interp_points - impulse_decel_points and impulse_decel_points > 0:
+                remaining = total_interp_points - idx
+                progress = remaining / impulse_decel_points
+                delay = 0.015 + 0.015 * (progress if progress < 1 else 1)
+            else:
+                delay = 0.008
+        else:
+            if idx < accel_points:
+                progress = idx / accel_points if accel_points > 0 else 1.0
+                delay = 0.05 * (1 - progress * 0.6) + 0.02
+            elif idx >= total_interp_points - decel_points and decel_points > 0:
+                remaining = total_interp_points - idx
+                progress = remaining / decel_points
+                delay = 0.05 * (1 - progress * 0.6) + 0.02
+            else:
+                delay = 0.02
+
+        time.sleep(delay)
+
+    print("  ✓ 平滑执行完成")
+    time.sleep(extra_delay)
+    return True
+
+
+def precise_move_to_pose(target_pose, speed=15, description="笛卡尔精调", min_fraction=0.9, force=False):
+    """通过自定义笛卡尔路径精调末端到目标位姿"""
+    global piper_arm
+
+    if not ENABLE_CARTESIAN_FINE_TUNE and not force:
+        print(f"  [{description}] 已禁用笛卡尔微调，跳过")
+        return get_current_joints()
+
+    current_joints = get_current_joints()
+    current_T = piper_arm.forward_kinematics(current_joints)
+    current_xyz = current_T[:3, 3]
+    target_xyz = target_pose[:3, 3]
+
+    distance = np.linalg.norm(target_xyz - current_xyz)
+    print(f"  [{description}] 当前误差: {distance*100:.2f}cm")
+    if distance < 0.0005:
+        print("  ✓ 已在目标附近，无需精调")
+        return current_joints
+
+    num_waypoints = max(30, int(distance * 200))
+    waypoint_poses = []
+    for i in range(1, num_waypoints + 1):
+        alpha = i / num_waypoints
+        intermediate_T = target_pose.copy()
+        intermediate_T[:3, 3] = current_xyz + alpha * (target_xyz - current_xyz)
+        waypoint_poses.append(intermediate_T)
+
+    print(f"  [{description}] 生成 {len(waypoint_poses)} 个waypoints")
+    cartesian_traj, fraction = compute_custom_cartesian_path(
+        current_joints,
+        waypoint_poses,
+        eef_step=CARTESIAN_EEF_STEP
+    )
+
+    if fraction < min_fraction or len(cartesian_traj) < 2:
+        print(f"  ⚠️  {description} 规划覆盖率不足 ({fraction*100:.1f}%)")
+        return False
+
+    exec_speed = min(speed, 20)
+    if not execute_sdk_cartesian_trajectory(
+        cartesian_traj,
+        exec_speed,
+        label=f"{description}SDK平滑执行",
+        profile=CARTESIAN_INTERPOLATION_PROFILE
+    ):
+        return False
+
+    final_joints = get_current_joints()
+    final_T = piper_arm.forward_kinematics(final_joints)
+    final_xyz = final_T[:3, 3]
+    error = np.linalg.norm(final_xyz - target_xyz)
+    print(f"  [{description}] 实际到达: XYZ=({final_xyz[0]:.3f}, {final_xyz[1]:.3f}, {final_xyz[2]:.3f}), 误差={error*100:.2f}cm")
+    return final_joints
+
+
+def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientation=True, speed_limit=None, profile=None):
     """
     沿末端执行器z轴方向移动（保持当前姿态或理想姿态）
     使用自定义笛卡尔路径规划以提高可靠性
@@ -1479,14 +1703,25 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
     # 使用自定义笛卡尔路径规划器
     print(f"  [自定义笛卡尔] 生成插值路径...")
     
-    # 生成笛卡尔路径waypoints
+    # 🔧 修复4: 增加waypoint密度，使小距离移动也能平滑
     waypoint_poses = []
-    num_steps = max(5, int(abs(distance) * 200))  # 每厘米200个点，更密集
+    abs_distance = abs(distance)
+    if abs_distance < 1e-6:
+        print("  ⚠️ 移动距离过小，保持当前位置")
+        return current_joints
+
+    desired_steps = int(abs_distance / CARTESIAN_WAYPOINT_STEP) if CARTESIAN_WAYPOINT_STEP > 0 else 0
+    num_steps = max(CARTESIAN_MIN_WAYPOINTS, desired_steps)
+    if CARTESIAN_MAX_WAYPOINTS is not None:
+        num_steps = min(num_steps, CARTESIAN_MAX_WAYPOINTS)
+    easing = lambda a: 3 * a ** 2 - 2 * a ** 3  # cubic ease-in-out
+
     for i in range(1, num_steps + 1):
         alpha = i / num_steps
+        eased_alpha = easing(alpha)
         intermediate_T = current_T.copy()
         # 沿末端Z轴方向移动
-        intermediate_T[:3, 3] += z_axis * distance * alpha
+        intermediate_T[:3, 3] += z_axis * distance * eased_alpha
         
         # 如果启用姿态锁定，保持理想姿态
         if lock_orientation:
@@ -1498,7 +1733,7 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
     cartesian_traj, fraction = compute_custom_cartesian_path(
         current_joints, 
         waypoint_poses, 
-        eef_step=0.005  # 5mm步长
+        eef_step=CARTESIAN_EEF_STEP  # 更细步长，减小相邻点跳变
     )
     
     if fraction < 0.9 or len(cartesian_traj) < 2:
@@ -1516,28 +1751,76 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
         return target_joints
     
     print(f"  ✓ 自定义笛卡尔规划成功 (覆盖率: {fraction*100:.1f}%, 轨迹点: {len(cartesian_traj)})")
-    
-    # 执行笛卡尔轨迹
-    print(f"  [SDK] 执行笛卡尔轨迹 ({len(cartesian_traj)}个点)...")
-    
-    piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)
-    
-    for idx, (joints, t) in enumerate(cartesian_traj):
-        joints_int = [int(joints[i] * factor) for i in range(6)]
-        joints_int[4] = max(-70000, joints_int[4])
-        piper.JointCtrl(*joints_int)
-        
-        # 控制执行频率（80Hz）
-        time.sleep(1.0 / 80.0)
-    
-    # 等待到达
+
+    limit = CARTESIAN_SPEED_LIMIT if speed_limit is None else speed_limit
+    ultra_smooth_speed = min(speed, limit)
+    profile_to_use = profile or CARTESIAN_INTERPOLATION_PROFILE
+    if not execute_sdk_cartesian_trajectory(
+        cartesian_traj,
+        ultra_smooth_speed,
+        label="末端Z轴SDK平滑执行",
+        profile=profile_to_use
+    ):
+        return None
+
     time.sleep(0.3)
-    
-    # 返回最终关节角度
     final_joints = cartesian_traj[-1][0] if len(cartesian_traj) > 0 else current_joints
     print(f"  ✓ 笛卡尔轨迹执行完成")
-    
     return final_joints
+
+
+def wait_for_joints_to_settle(target_joints, tolerance=0.01, timeout=1.5, label="运动"):
+    """轮询当前关节反馈，确认实机追上目标后再执行下一步"""
+    if target_joints is None:
+        return False
+
+    start_time = time.time()
+    max_error = float("inf")
+    while time.time() - start_time < timeout:
+        current = get_current_joints()
+        max_error = max(abs(current[i] - target_joints[i]) for i in range(6))
+        if max_error <= tolerance:
+            print(f"  ✓ {label}已稳定，最大误差 {max_error:.5f} rad")
+            return True
+        time.sleep(0.05)
+
+    print(f"  ⚠️ {label}仍在缓冲 (最大误差 {max_error:.5f} rad)，建议稍等或降速")
+    return False
+
+
+def safe_return_to_zero(speed=40, use_moveit_first=True, gripper_value=None, description="回零"):
+    """使用MoveIt+SDK双重保障安全回零"""
+    zero_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    use_moveit_plan = (
+        use_moveit_first and USE_MOVEIT and MOVEIT_AVAILABLE and move_group is not None
+    )
+
+    moveit_success = False
+    if use_moveit_plan:
+        print(f"  [{description}] MoveIt2规划回零...")
+        moveit_success = control_arm(zero_joints, min(speed, NORMAL_SPEED), True, gripper_value)
+        if not moveit_success:
+            print("  ⚠️ MoveIt回零失败，将回退到SDK零点")
+    else:
+        print("  [{description}] MoveIt不可用，直接使用SDK零点")
+
+    if not moveit_success:
+        control_arm_sdk(zero_joints, min(speed, 30), gripper_value)
+
+    time.sleep(0.2)
+    final_joints = get_current_joints()
+    max_error = max(abs(j) for j in final_joints)
+    print(f"  [{description}] 当前最大偏差: {max_error:.4f} rad ({max_error*180/PI:.2f}°)")
+
+    if max_error > 0.01:
+        print("  ↪ 偏差仍大，使用慢速SDK精调零点...")
+        control_arm_sdk(zero_joints, 10, gripper_value)
+        time.sleep(0.5)
+        final_joints = get_current_joints()
+        max_error = max(abs(j) for j in final_joints)
+        print(f"  [{description}] 精调后最大偏差: {max_error:.4f} rad ({max_error*180/PI:.2f}°)")
+
+    return max_error < 0.02
 
 
 # ========================================
@@ -1573,14 +1856,28 @@ def action_plugin():
         TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
         USE_6D_POSE
     )
-    
+
     joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
         print("❌ 目标位置IK失败")
         return False
-    
-    if not control_arm(joints_target, NORMAL_SPEED, USE_MOVEIT, PLUGIN_GRIPPER_OPEN):
-        return False
+
+    success, _ = move_to_pose_with_retries(
+        targetT,
+        joints_target,
+        speed=NORMAL_SPEED,
+        gripper_value=PLUGIN_GRIPPER_OPEN,
+        description="Plugin第一阶段"
+    )
+    if not success:
+        if ENABLE_CARTESIAN_FINE_TUNE:
+            print("  ↪ MoveIt误差仍大，改用笛卡尔微调确保第一阶段准确")
+            if not precise_move_to_pose(targetT, speed=15, description="Plugin笛卡尔精调", force=True):
+                print("❌ 微调失败，终止动作")
+                return False
+        else:
+            print("❌ Plugin第一阶段未能满足精度要求，终止动作以避免误差放大")
+            return False
     time.sleep(0.1)
     
     # 步骤3: 沿末端z轴插入
@@ -1609,7 +1906,13 @@ def action_plugin():
     actual_xyz_step5 = actual_T_step5[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_step5[0]:.3f}, {actual_xyz_step5[1]:.3f}, {actual_xyz_step5[2]:.3f})")
     
-    joints_extract = move_along_end_effector_z(actual_joints_step5, -PLUGIN_INSERT_DEPTH, PLUGIN_EXTRACT_SPEED)
+    joints_extract = move_along_end_effector_z(
+        actual_joints_step5,
+        -PLUGIN_INSERT_DEPTH,
+        PLUGIN_EXTRACT_SPEED,
+        speed_limit=CARTESIAN_HIGH_SPEED_LIMIT,
+        profile=CARTESIAN_HIGH_ACCEL_PROFILE
+    )
     if not joints_extract:
         return False
     time.sleep(0.1)
@@ -1619,19 +1922,18 @@ def action_plugin():
     piper.GripperCtrl(PLUGIN_GRIPPER_OPEN, 1000, 0x01, 0)
     time.sleep(0.1)
     
-    # 步骤7: 回零位
-    # 【关键修复】使用实际当前位置
+    # 步骤7: 回零位（MoveIt+SDK双保障）
     print("\n步骤7: 回零位...")
-    actual_joints_step7 = get_current_joints()  # 获取拔出后的实际位置
+    actual_joints_step7 = get_current_joints()
     actual_T_step7 = piper_arm.forward_kinematics(actual_joints_step7)
     actual_xyz_step7 = actual_T_step7[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_step7[0]:.3f}, {actual_xyz_step7[1]:.3f}, {actual_xyz_step7[2]:.3f})")
-    print(f"  目标: 零点")
     
-    joints_zero = [0, 0, 0, 0, 0, 0]
-    if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT):
+    if not safe_return_to_zero(description="Plugin回零"):
         return False
-    time.sleep(0.1)
+    final_joints = get_current_joints()
+    max_error = max(abs(j) for j in final_joints)
+    print(f"  ✓ 回零完成 (最大偏差: {max_error:.4f} rad = {max_error*180/PI:.2f}°)")
     
     # 步骤8: 夹爪闭合
     print("\n步骤8: 夹爪闭合...")
@@ -1683,8 +1985,22 @@ def action_toggle():
         print("❌ 目标位置IK失败")
         return False
     
-    if not control_arm(joints_target, NORMAL_SPEED, USE_MOVEIT, TOGGLE_GRIPPER_OPEN):
-        return False
+    success, _ = move_to_pose_with_retries(
+        targetT,
+        joints_target,
+        speed=NORMAL_SPEED,
+        gripper_value=TOGGLE_GRIPPER_OPEN,
+        description="Toggle第一阶段"
+    )
+    if not success:
+        if ENABLE_CARTESIAN_FINE_TUNE:
+            print("  ↪ MoveIt误差仍大，使用笛卡尔微调补偿")
+            if not precise_move_to_pose(targetT, speed=15, description="Toggle笛卡尔精调", force=True):
+                print("❌ 微调失败，终止动作")
+                return False
+        else:
+            print("❌ Toggle第一阶段未满足精度要求，终止动作")
+            return False
     time.sleep(1.0)
     
     # 步骤3: joint4旋转90度
@@ -1733,19 +2049,18 @@ def action_toggle():
     piper.GripperCtrl(TOGGLE_GRIPPER_OPEN, 1000, 0x01, 0)
     time.sleep(0.8)
     
-    # 步骤8: 回零位
-    # 【关键修复】使用实际当前位置
+    # 步骤8: 回零位（MoveIt+SDK双保障）
     print("\n步骤8: 回零位...")
-    actual_joints_step8 = get_current_joints()  # 获取拨动后的实际位置
+    actual_joints_step8 = get_current_joints()
     actual_T_step8 = piper_arm.forward_kinematics(actual_joints_step8)
     actual_xyz_step8 = actual_T_step8[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_step8[0]:.3f}, {actual_xyz_step8[1]:.3f}, {actual_xyz_step8[2]:.3f})")
-    print(f"  目标: 零点")
     
-    joints_zero = [0, 0, 0, 0, 0, 0]
-    if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT):
+    if not safe_return_to_zero(description="Toggle回零"):
         return False
-    time.sleep(1.0)
+    final_joints = get_current_joints()
+    max_error = max(abs(j) for j in final_joints)
+    print(f"  ✓ 回零完成 (最大偏差: {max_error:.4f} rad = {max_error*180/PI:.2f}°)")
     
     # 步骤9: 夹爪闭合
     print("\n步骤9: 夹爪闭合...")
@@ -1783,130 +2098,56 @@ def action_push():
     piper.GripperCtrl(PUSH_GRIPPER_CLOSE, 1000, 0x01, 0)
     time.sleep(0.1)  # 减少等待时间：夹爪动作很快
     
-    # 步骤2: 移动到目标位置
-    print("\n步骤2: 移动到目标位置...")
-    print(f"  目标: XYZ=({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f})")
-    
-    # 获取当前位置
-    current_joints = get_current_joints()
-    current_T = piper_arm.forward_kinematics(current_joints)
-    current_xyz = current_T[:3, 3]
-    print(f"  当前: XYZ=({current_xyz[0]:.3f}, {current_xyz[1]:.3f}, {current_xyz[2]:.3f})")
-    
-    # 创建目标位姿
+    # 步骤2: MoveIt规划到目标位置（保持两阶段流程）
+    print("\n步骤2: MoveIt规划到目标位置...")
     targetT = create_target_transform(
         TARGET_X, TARGET_Y, TARGET_Z,
         TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
         USE_6D_POSE
     )
-    
-    # 使用MoveIt2高精度IK计算目标关节角度
+    target_xyz = targetT[:3, 3]
+
     joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
         print("❌ 目标位置IK失败")
         return False
-    
-    # 使用MoveIt规划到达（关节空间规划，比笛卡尔规划更可靠）
-    if not control_arm(joints_target, NORMAL_SPEED, USE_MOVEIT, PUSH_GRIPPER_CLOSE):
-        return False
-    # time.sleep(1.0)  # 不需要：control_arm_moveit内部已等待到达
-    
-    # 验证到达位置
+
+    success, _ = move_to_pose_with_retries(
+        targetT,
+        joints_target,
+        speed=NORMAL_SPEED,
+        gripper_value=PUSH_GRIPPER_CLOSE,
+        description="Push第一阶段"
+    )
+    if not success:
+        if ENABLE_CARTESIAN_FINE_TUNE:
+            print("  ↪ MoveIt误差仍大，尝试笛卡尔精调确保阶段一准确")
+            if not precise_move_to_pose(targetT, speed=12, description="Push笛卡尔精调", force=True):
+                print("❌ 笛卡尔精调失败，终止动作")
+                return False
+        else:
+            print("❌ Push第一阶段未满足精度要求，终止动作")
+            return False
+
     final_joints = get_current_joints()
     final_T = piper_arm.forward_kinematics(final_joints)
     final_xyz = final_T[:3, 3]
-    print(f"  实际到达: XYZ=({final_xyz[0]:.3f}, {final_xyz[1]:.3f}, {final_xyz[2]:.3f})")
-    error = np.linalg.norm(final_xyz - np.array([TARGET_X, TARGET_Y, TARGET_Z]))
-    print(f"  位置误差: {error*100:.2f}cm")
-    
-    # 如果误差较大且启用了MoveIt，尝试笛卡尔路径微调
-    if error > 0.01 and USE_MOVEIT and MOVEIT_AVAILABLE and move_group is not None:
-        print(f"  位置误差较大，尝试笛卡尔路径微调...")
-        try:
-            from geometry_msgs.msg import Pose
-            from utils.utils_math import rotation_matrix_to_quaternion
-            
-            target_pose = Pose()
-            target_pose.position.x = TARGET_X
-            target_pose.position.y = TARGET_Y
-            target_pose.position.z = TARGET_Z
-            
-            quat = rotation_matrix_to_quaternion(targetT[:3, :3])
-            target_pose.orientation.x = quat[0]
-            target_pose.orientation.y = quat[1]
-            target_pose.orientation.z = quat[2]
-            target_pose.orientation.w = quat[3]
-            
-            waypoints = [target_pose]
-            (plan, fraction) = move_group.compute_cartesian_path(waypoints, 0.01, 0.0)
-            
-            if fraction > 0.9 and len(plan.joint_trajectory.points) > 0:
-                print(f"  ✓ 笛卡尔微调成功 (覆盖率: {fraction*100:.1f}%)")
-                
-                traj_points = plan.joint_trajectory.points
-                piper.MotionCtrl_2(0x01, 0x01, NORMAL_SPEED, 0x00)
-                
-                start_time = rospy.Time.now()
-                command_rate = rospy.Rate(COMMAND_SEND_RATE)
-                
-                current_point_idx = 0
-                next_point_idx = 1
-                
-                while next_point_idx < len(traj_points):
-                    elapsed = (rospy.Time.now() - start_time).to_sec()
-                    
-                    while next_point_idx < len(traj_points) and elapsed >= traj_points[next_point_idx].time_from_start.to_sec():
-                        current_point_idx = next_point_idx
-                        next_point_idx += 1
-                    
-                    if next_point_idx >= len(traj_points):
-                        break
-                    
-                    point_current = traj_points[current_point_idx]
-                    point_next = traj_points[next_point_idx]
-                    
-                    t_current = point_current.time_from_start.to_sec()
-                    t_next = point_next.time_from_start.to_sec()
-                    
-                    if t_next > t_current:
-                        ratio = (elapsed - t_current) / (t_next - t_current)
-                        ratio = max(0.0, min(1.0, ratio))
-                    else:
-                        ratio = 1.0
-                    
-                    joints_interpolated = []
-                    for i in range(6):
-                        pos_current = point_current.positions[i]
-                        pos_next = point_next.positions[i]
-                        pos_interp = pos_current + ratio * (pos_next - pos_current)
-                        joints_interpolated.append(pos_interp)
-                    
-                    joints_int = [int(joints_interpolated[i] * factor) for i in range(6)]
-                    joints_int[4] = max(-70000, joints_int[4])
-                    piper.JointCtrl(*joints_int)
-                    
-                    command_rate.sleep()
-                
-                joints_target = [traj_points[-1].positions[i] for i in range(6)]
-                rospy.sleep(0.5)
-                
-                # 再次验证
-                final_T = piper_arm.forward_kinematics(joints_target)
-                final_xyz = final_T[:3, 3]
-                print(f"  微调后位置: XYZ=({final_xyz[0]:.3f}, {final_xyz[1]:.3f}, {final_xyz[2]:.3f})")
-                error = np.linalg.norm(final_xyz - np.array([TARGET_X, TARGET_Y, TARGET_Z]))
-                print(f"  最终误差: {error*100:.2f}cm")
-            else:
-                print(f"  笛卡尔微调失败 (覆盖率: {fraction*100:.1f}%)，使用当前位置")
-        except Exception as e:
-            print(f"  笛卡尔微调异常: {e}，使用当前位置")
+    error = np.linalg.norm(final_xyz - target_xyz)
+    print(f"  ✓ 实际到达: XYZ=({final_xyz[0]:.3f}, {final_xyz[1]:.3f}, {final_xyz[2]:.3f}), 误差={error*100:.2f}cm")
+    time.sleep(0.3)
     
     # 步骤3: 沿末端z轴插入（按压）
     # 使用实际到达的关节角度，而不是IK计算的理论值
     print(f"\n步骤3: 沿末端z轴按压 {PUSH_INSERT_DEPTH*100:.1f}cm...")
     actual_joints = get_current_joints()  # 获取实际当前位置
     print(f"  使用实际关节角度作为起点")
-    joints_press = move_along_end_effector_z(actual_joints, PUSH_INSERT_DEPTH, PUSH_PRESS_SPEED)
+    joints_press = move_along_end_effector_z(
+        actual_joints,
+        PUSH_INSERT_DEPTH,
+        PUSH_PRESS_SPEED,
+        speed_limit=CARTESIAN_HIGH_SPEED_LIMIT,
+        profile=CARTESIAN_HIGH_ACCEL_PROFILE
+    )
     if not joints_press:
         return False
     
@@ -1921,24 +2162,29 @@ def action_push():
     actual_xyz_after_press = actual_T_after_press[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_after_press[0]:.3f}, {actual_xyz_after_press[1]:.3f}, {actual_xyz_after_press[2]:.3f})")
     
-    joints_retract = move_along_end_effector_z(actual_joints_after_press, -PUSH_INSERT_DEPTH, PUSH_PRESS_SPEED)
+    joints_retract = move_along_end_effector_z(
+        actual_joints_after_press,
+        -PUSH_INSERT_DEPTH,
+        PUSH_PRESS_SPEED,
+        speed_limit=CARTESIAN_HIGH_SPEED_LIMIT,
+        profile=CARTESIAN_HIGH_ACCEL_PROFILE
+    )
     if not joints_retract:
         return False
     time.sleep(0.1)
     
-    # 步骤6: 回零位
-    # 【关键修复】使用实际当前位置作为起点
+    # 步骤6: 回零位（MoveIt+SDK双保障）
     print("\n步骤6: 回零位...")
-    actual_joints_before_zero = get_current_joints()  # 获取返回后的实际位置
+    actual_joints_before_zero = get_current_joints()
     actual_T_before_zero = piper_arm.forward_kinematics(actual_joints_before_zero)
     actual_xyz_before_zero = actual_T_before_zero[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_before_zero[0]:.3f}, {actual_xyz_before_zero[1]:.3f}, {actual_xyz_before_zero[2]:.3f})")
-    print(f"  目标: 零点")
     
-    joints_zero = [0, 0, 0, 0, 0, 0]
-    if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT, PUSH_GRIPPER_CLOSE):
+    if not safe_return_to_zero(description="Push回零"):
         return False
-    time.sleep(0.1)
+    final_joints = get_current_joints()
+    max_error = max(abs(j) for j in final_joints)
+    print(f"  ✓ 回零完成 (最大偏差: {max_error:.4f} rad = {max_error*180/PI:.2f}°)")
 
     # 保存和可视化完整轨迹
     save_and_visualize_trajectory()
@@ -1984,63 +2230,137 @@ def action_knob():
         print("❌ 目标位置IK失败")
         return False
     
-    if not control_arm(joints_target, NORMAL_SPEED, USE_MOVEIT, KNOB_GRIPPER_OPEN):
-        return False
+    success, _ = move_to_pose_with_retries(
+        targetT,
+        joints_target,
+        speed=NORMAL_SPEED,
+        gripper_value=KNOB_GRIPPER_OPEN,
+        description="Knob第一阶段"
+    )
+    if not success:
+        if ENABLE_CARTESIAN_FINE_TUNE:
+            print("  ↪ MoveIt误差仍大，启动笛卡尔微调确保阶段一准确")
+            if not precise_move_to_pose(targetT, speed=12, description="Knob笛卡尔精调", force=True):
+                print("❌ 笛卡尔微调失败，终止旋钮动作")
+                return False
+        else:
+            print("❌ Knob第一阶段未满足精度要求，终止动作")
+            return False
     time.sleep(0.1)
     
     # 步骤3: 沿末端z轴插入
-    # 使用实际到达的关节角度，而不是IK计算的理论值
-    print(f"\n步骤3: 沿末端z轴插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
-    actual_joints_step3 = get_current_joints()  # 获取实际当前位置
-    actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
-    actual_xyz_step3 = actual_T_step3[:3, 3]
-    print(f"  实际起点: XYZ=({actual_xyz_step3[0]:.3f}, {actual_xyz_step3[1]:.3f}, {actual_xyz_step3[2]:.3f})")
-    
-    joints_insert = move_along_end_effector_z(actual_joints_step3, KNOB_INSERT_DEPTH, KNOB_INSERT_SPEED)
-    if not joints_insert:
-        return False
-    time.sleep(0.1)
+    if abs(KNOB_INSERT_DEPTH) > 1e-6:
+        # 使用实际到达的关节角度，而不是IK计算的理论值
+        print(f"\n步骤3: 沿末端z轴插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
+        actual_joints_step3 = get_current_joints()  # 获取实际当前位置
+        actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
+        actual_xyz_step3 = actual_T_step3[:3, 3]
+        print(f"  实际起点: XYZ=({actual_xyz_step3[0]:.3f}, {actual_xyz_step3[1]:.3f}, {actual_xyz_step3[2]:.3f})")
+        
+        joints_insert = move_along_end_effector_z(actual_joints_step3, KNOB_INSERT_DEPTH, KNOB_INSERT_SPEED)
+        if not joints_insert:
+            return False
+        time.sleep(0.1)
     
     # 步骤4: 夹爪闭合
     print(f"\n步骤4: 夹爪闭合到 {KNOB_GRIPPER_HOLD/1000:.1f}mm...")
     piper.GripperCtrl(KNOB_GRIPPER_HOLD, 1000, 0x01, 0)
     time.sleep(0.1)
     
-    # 步骤5: 旋转joint6
-    # 【关键修复】使用实际当前位置
+    # 步骤5: 旋转旋钮（保持位置不变，只改变姿态）
+    # 【重要修复】使用笛卡尔旋转路径，让所有关节协同工作，而不是只转动joint6
     direction_sign = 1 if KNOB_ROTATION_DIRECTION == 'cw' else -1
+    target_rotation_joints = None
     print(f"\n步骤5: 旋转 {KNOB_ROTATION_ANGLE}° ({KNOB_ROTATION_DIRECTION})...")
     actual_joints_step5 = get_current_joints()  # 获取插入后的实际位置
     actual_T_step5 = piper_arm.forward_kinematics(actual_joints_step5)
     actual_xyz_step5 = actual_T_step5[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_step5[0]:.3f}, {actual_xyz_step5[1]:.3f}, {actual_xyz_step5[2]:.3f})")
-    print(f"  当前关节角度: [{', '.join([f'{j:.4f}' for j in actual_joints_step5])}]")
+    print(f"  保持位置不变，仅旋转姿态 {KNOB_ROTATION_ANGLE}°")
     
-    joints_rotate = actual_joints_step5.copy()
-    joints_rotate[5] += direction_sign * KNOB_ROTATION_ANGLE * PI / 180
-    print(f"  目标关节角度: [{', '.join([f'{j:.4f}' for j in joints_rotate])}]")
-    if not control_arm(joints_rotate, KNOB_ROTATION_SPEED, USE_MOVEIT, KNOB_GRIPPER_HOLD):
-        return False
-    time.sleep(0.1)
+    # 🔧 新方法：生成笛卡尔旋转路径（位置不变，姿态旋转）
+    rotation_angle_rad = direction_sign * KNOB_ROTATION_ANGLE * PI / 180
     
-    # 步骤6: 夹爪张开（松开旋钮）
-    print("\n步骤6: 夹爪张开...")
+    # 生成旋转waypoints
+    num_rotation_steps = max(10, int(abs(KNOB_ROTATION_ANGLE) / 5))  # 每5度一个点
+    waypoint_poses_rotation = []
+    
+    for i in range(1, num_rotation_steps + 1):
+        alpha = i / num_rotation_steps
+        intermediate_angle = rotation_angle_rad * alpha
+        
+        # 创建旋转矩阵（绕Z轴旋转）
+        cos_a = np.cos(intermediate_angle)
+        sin_a = np.sin(intermediate_angle)
+        rotation_z = np.array([
+            [cos_a, -sin_a, 0],
+            [sin_a,  cos_a, 0],
+            [0,      0,     1]
+        ])
+        
+        # 应用旋转到当前姿态
+        intermediate_T = actual_T_step5.copy()
+        intermediate_T[:3, :3] = actual_T_step5[:3, :3] @ rotation_z  # 在末端坐标系旋转
+        # 保持位置不变
+        intermediate_T[:3, 3] = actual_xyz_step5
+        
+        waypoint_poses_rotation.append(intermediate_T)
+    
+    # 使用自定义笛卡尔规划器
+    print(f"  [笛卡尔旋转] 生成旋转路径 ({num_rotation_steps}个waypoints)...")
+    cartesian_traj_rotation, fraction_rotation = compute_custom_cartesian_path(
+        actual_joints_step5,
+        waypoint_poses_rotation,
+        eef_step=0.01  # 1cm步长
+    )
+    
+    if fraction_rotation < 0.8 or len(cartesian_traj_rotation) < 2:
+        print(f"  ⚠️  笛卡尔旋转规划覆盖率较低: {fraction_rotation*100:.1f}%")
+        print(f"  回退到简单joint6旋转...")
+        # 回退到原方法：只转joint6
+        joints_rotate = actual_joints_step5.copy()
+        joints_rotate[5] += rotation_angle_rad
+        if not control_arm(joints_rotate, KNOB_ROTATION_SPEED, USE_MOVEIT, KNOB_GRIPPER_HOLD):
+            return False
+        target_rotation_joints = joints_rotate
+    else:
+        print(f"  ✓ 笛卡尔旋转规划成功 (覆盖率: {fraction_rotation*100:.1f}%, 轨迹点: {len(cartesian_traj_rotation)})")
+        
+        # 执行旋转轨迹
+        print(f"  [SDK] 执行旋转轨迹 ({len(cartesian_traj_rotation)}个点)...")
+        smooth_rotation_speed = min(KNOB_ROTATION_SPEED, 15)
+        piper.MotionCtrl_2(0x01, 0x01, smooth_rotation_speed, 0x00)
+        
+        for idx, (joints, t) in enumerate(cartesian_traj_rotation):
+            joints_int = [int(joints[i] * factor) for i in range(6)]
+            joints_int[4] = max(-70000, joints_int[4])
+            piper.JointCtrl(*joints_int)
+            time.sleep(0.02)  # 50Hz执行频率
+        
+        print(f"  ✓ 笛卡尔旋转轨迹执行完成")
+        target_rotation_joints = cartesian_traj_rotation[-1][0]
+    
+    # 🔧 修复2: 等待旋转完全停止后再继续
+    wait_for_joints_to_settle(target_rotation_joints, tolerance=0.008, timeout=2.0, label="旋钮旋转")
+    time.sleep(0.2)
+    
+    # 步骤6: 夹爪张开（确认旋转完成后再松开）
+    print("\n步骤6: 夹爪张开（已确认旋转结束）...")
     piper.GripperCtrl(KNOB_GRIPPER_OPEN, 1000, 0x01, 0)
-    time.sleep(0.1)
+    time.sleep(0.2)  # 等待夹爪张开
     
     # 步骤7: 回零位
-    # 【关键修复】使用实际当前位置
     print("\n步骤7: 回零位...")
-    actual_joints_step7 = get_current_joints()  # 获取旋转后的实际位置
+    actual_joints_step7 = get_current_joints()
     actual_T_step7 = piper_arm.forward_kinematics(actual_joints_step7)
     actual_xyz_step7 = actual_T_step7[:3, 3]
     print(f"  当前位置: XYZ=({actual_xyz_step7[0]:.3f}, {actual_xyz_step7[1]:.3f}, {actual_xyz_step7[2]:.3f})")
-    print(f"  目标: 零点")
     
-    joints_zero = [0, 0, 0, 0, 0, 0]
-    if not control_arm(joints_zero, FAST_SPEED, USE_MOVEIT, KNOB_GRIPPER_OPEN):
+    if not safe_return_to_zero(description="Knob回零"):
         return False
-    time.sleep(0.1)
+    final_joints = get_current_joints()
+    max_error = max(abs(j) for j in final_joints)
+    print(f"  ✓ 回零完成 (最大偏差: {max_error:.4f} rad = {max_error*180/PI:.2f}°)")
     
     # 步骤8: 夹爪闭合
     print("\n步骤8: 夹爪闭合...")
@@ -2062,7 +2382,7 @@ def action_knob():
 
 def main():
     global piper, piper_arm, move_group, moveit_node, display_trajectory_publisher, ee_path_publisher, ee_trail_publisher
-    global MOVEIT_AVAILABLE  # 🔧 修复：在函数开始声明，避免语法错误
+    global MOVEIT_AVAILABLE, joint_state_publisher, joint_state_timer, ros2_executor, ros2_spin_thread  # 🔧 修复：在函数开始声明，避免语法错误
     
     print("="*70)
     print("按钮操作执行器 - 独立版本")
@@ -2142,7 +2462,6 @@ def main():
             
             # 启动joint_states发布器（MoveIt2需要）
             from sensor_msgs.msg import JointState
-            global joint_state_publisher, joint_state_timer
             joint_state_publisher = moveit_node.create_publisher(JointState, '/joint_states', 10)
             joint_state_timer = moveit_node.create_timer(0.1, publish_joint_states_callback)  # 10Hz
             print("  ✓ joint_states发布器已启动 (10Hz)")
@@ -2153,11 +2472,10 @@ def main():
             print("  ✓ Action Client已创建")
             
             # 启动后台线程持续spin节点（让timer回调能运行）
-            global ros2_executor
             ros2_executor = rclpy.executors.SingleThreadedExecutor()
             ros2_executor.add_node(moveit_node)
-            spin_thread = threading.Thread(target=ros2_executor.spin, daemon=True)
-            spin_thread.start()
+            ros2_spin_thread = threading.Thread(target=ros2_executor.spin, daemon=True)
+            ros2_spin_thread.start()
             print("  ✓ ROS2 spin线程已启动")
             
             # 等待joint_states开始发布
@@ -2186,12 +2504,32 @@ def main():
                         pass
                     move_group = None
                     
+                    # 1.5 停止joint_states timer/publisher
+                    try:
+                        if joint_state_timer is not None:
+                            joint_state_timer.cancel()
+                            joint_state_timer = None
+                    except:
+                        pass
+                    try:
+                        if moveit_node is not None and joint_state_publisher is not None:
+                            moveit_node.destroy_publisher(joint_state_publisher)
+                    except:
+                        pass
+                    joint_state_publisher = None
+                    
                     # 2. 停止spin线程
                     try:
                         ros2_executor.shutdown()
                     except:
                         pass
                     ros2_executor = None
+                    try:
+                        if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
+                            ros2_spin_thread.join(timeout=1.0)
+                    except:
+                        pass
+                    ros2_spin_thread = None
                     
                     # 3. 销毁节点
                     try:
@@ -2235,10 +2573,29 @@ def main():
                 pass
             
             try:
+                if joint_state_timer is not None:
+                    joint_state_timer.cancel()
+                    joint_state_timer = None
+            except:
+                pass
+            try:
+                if moveit_node is not None and joint_state_publisher is not None:
+                    moveit_node.destroy_publisher(joint_state_publisher)
+            except:
+                pass
+            joint_state_publisher = None
+            
+            try:
                 if 'ros2_executor' in locals() and ros2_executor is not None:
                     ros2_executor.shutdown()
             except:
                 pass
+            try:
+                if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
+                    ros2_spin_thread.join(timeout=1.0)
+            except:
+                pass
+            ros2_spin_thread = None
             
             try:
                 if 'moveit_node' in locals() and moveit_node is not None:
@@ -2255,10 +2612,10 @@ def main():
     
     # 回零位
     print("\n回零位...")
-    joints_zero = [0, 0, 0, 0, 0, 0]
-    control_arm_sdk(joints_zero, 100)
-    time.sleep(2)
-    print("  ✓ 已回零位")
+    if not safe_return_to_zero(speed=60, description="启动回零"):
+        print("  ⚠️ 启动阶段回零存在偏差，请检查关节状态")
+    else:
+        print("  ✓ 已回零位")
     
     print("\n="*70)
     print("开始执行动作...")
@@ -2288,38 +2645,76 @@ def main():
         import traceback
         traceback.print_exc()
     
-    # 清理资源
+    # 清理资源 🔧 关键修复：防止段错误
+    print("\n正在清理资源...")
     if MOVEIT_AVAILABLE:
         try:
-            # 先销毁Action Client
-            if move_group is not None:
-                move_group.destroy()
-                move_group = None
-            
-            # 停止executor（在销毁节点前）
+            # 1. 先停止joint_states timer/publisher，防止回调继续运行
+            if joint_state_timer is not None:
+                try:
+                    joint_state_timer.cancel()
+                except Exception as e:
+                    print(f"    (忽略timer错误: {e})")
+                joint_state_timer = None
+            if moveit_node is not None and joint_state_publisher is not None:
+                try:
+                    moveit_node.destroy_publisher(joint_state_publisher)
+                except Exception as e:
+                    print(f"    (忽略publisher错误: {e})")
+            joint_state_publisher = None
+
+            # 2. 停止executor和spin线程，确保没有后台线程调用rcl接口
             if ros2_executor is not None:
                 try:
+                    print("  - 正在停止 executor...")
                     ros2_executor.shutdown()
-                except:
-                    pass
-            
-            # 再销毁节点
+                except Exception as e:
+                    print(f"    (忽略错误: {e})")
+                ros2_executor = None
+            if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
+                ros2_spin_thread.join(timeout=1.0)
+            ros2_spin_thread = None
+
+            # 3. 现在销毁Action Client，避免spin线程仍在访问
+            if move_group is not None:
+                try:
+                    print("  - 正在销毁 Action Client...")
+                    move_group.destroy()
+                except Exception as e:
+                    print(f"    (忽略错误: {e})")
+                move_group = None
+
+            # 4. 销毁节点
             if moveit_node is not None:
                 try:
+                    print("  - 正在销毁 node...")
                     moveit_node.destroy_node()
-                except:
-                    pass
+                except Exception as e:
+                    print(f"    (忽略错误: {e})")
                 moveit_node = None
-            
-            # 最后关闭ROS2
+
+            # 5. 关闭rclpy
             try:
-                rclpy.shutdown()
-            except:
-                pass
+                if rclpy.ok():
+                    print("  - 正在关闭 rclpy...")
+                    rclpy.shutdown()
+            except Exception as e:
+                print(f"    (忽略错误: {e})")
+            
+            print("  ✓ 资源清理完成")
         except Exception as e:
             print(f"  ⚠️  清理资源时出现异常（可忽略）: {e}")
     
-    print("\n程序结束")
+    # 5. 最后禁用机械臂（可选）
+    # try:
+    #     print("  - 正在禁用机械臂...")
+    #     piper.DisableArm(7)
+    #     piper.DisconnectPort()
+    #     print("  ✓ 机械臂已安全断开")
+    # except:
+    #     pass
+    
+    print("\n程序正常结束")
 
 
 if __name__ == "__main__":
