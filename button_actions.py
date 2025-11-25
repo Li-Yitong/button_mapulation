@@ -95,7 +95,7 @@ USE_6D_POSE = True   # True=使用6D位姿(含姿态), False=仅使用位置(末
 ACTION_TYPE = 'plugin'  # 'toggle'/'plugin'/'push'/'knob'
 
 # === 控制模式 ===
-USE_MOVEIT = True  # 启动脚本自动设置
+USE_MOVEIT = False  # ROS2启动脚本: 纯SDK模式
 
 # === 精调与调试开关 ===
 ENABLE_CARTESIAN_FINE_TUNE = False    # True=MoveIt后允许笛卡尔微调, False=严格使用MoveIt结果

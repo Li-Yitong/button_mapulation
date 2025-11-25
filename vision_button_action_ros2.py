@@ -188,20 +188,69 @@ class VisionButtonActionNode(Node):
         return True
 
     def _transform_camera_to_base(self, button_center_camera: np.ndarray, current_joints) -> np.ndarray:
+        # 获取基座到link6的变换矩阵
         base_T_link6 = self.piper_arm.forward_kinematics(current_joints)
+        
+        # 构建link6到相机的变换矩阵（手眼标定结果）
         link6_T_cam = np.eye(4)
         link6_T_cam[:3, :3] = quaternion_to_rotation_matrix(self.piper_arm.link6_q_camera)
         link6_T_cam[:3, 3] = self.piper_arm.link6_t_camera
+        
+        # 按钮在相机坐标系的齐次坐标
         button_cam_h = np.array([button_center_camera[0], button_center_camera[1], button_center_camera[2], 1.0])
-        button_base = base_T_link6 @ link6_T_cam @ button_cam_h
+        
+        # ===== 调试输出 =====
+        self.get_logger().info("【坐标转换调试】")
+        self.get_logger().info(f"  输入: 按钮相机坐标 (optical) = ({button_center_camera[0]:.4f}, {button_center_camera[1]:.4f}, {button_center_camera[2]:.4f})")
+        self.get_logger().info(f"  当前关节角 (度) = {np.array(current_joints) * 180 / PI}")
+        self.get_logger().info(f"  link6_t_camera = {self.piper_arm.link6_t_camera}")
+        self.get_logger().info(f"  link6_q_camera = {self.piper_arm.link6_q_camera}")
+        self.get_logger().info(f"  base_T_link6 末端位置 = ({base_T_link6[0, 3]:.4f}, {base_T_link6[1, 3]:.4f}, {base_T_link6[2, 3]:.4f})")
+        
+        # 方案1: 直接转换 (假设标定使用optical frame)
+        button_base_v1 = base_T_link6 @ link6_T_cam @ button_cam_h
+        self.get_logger().info(f"  方案1 (optical直接): ({button_base_v1[0]:.4f}, {button_base_v1[1]:.4f}, {button_base_v1[2]:.4f})")
+        
+        # 方案2: 光学坐标系 → 标准ROS坐标系转换
+        # optical: x右 y下 z前  →  standard: x前 y左 z上
+        optical_T_standard = np.array([[0, 0, 1, 0],
+                                       [-1, 0, 0, 0],
+                                       [0, -1, 0, 0],
+                                       [0, 0, 0, 1]])
+        button_standard_h = optical_T_standard @ button_cam_h
+        button_base_v2 = base_T_link6 @ link6_T_cam @ button_standard_h
+        self.get_logger().info(f"  方案2 (optical→std): ({button_base_v2[0]:.4f}, {button_base_v2[1]:.4f}, {button_base_v2[2]:.4f})")
+        
+        # 方案3: 交换轴向 (常见的debug方法)
+        button_cam_swapped = np.array([button_center_camera[2], -button_center_camera[0], -button_center_camera[1], 1.0])
+        button_base_v3 = base_T_link6 @ link6_T_cam @ button_cam_swapped
+        self.get_logger().info(f"  方案3 (轴向交换): ({button_base_v3[0]:.4f}, {button_base_v3[1]:.4f}, {button_base_v3[2]:.4f})")
+        
+        # 默认使用方案1，请根据实际结果调整
+        button_base = button_base_v1
+        self.get_logger().warn("⚠️  当前使用方案1，若误差>10cm请根据调试日志切换方案2或3")
+        
         return button_base
 
     def _apply_tcp_offset(self, button_base: np.ndarray, current_joints, tcp_offset_local: np.ndarray) -> np.ndarray:
+        # 获取末端姿态
         base_T_link6 = self.piper_arm.forward_kinematics(current_joints)
         R_base_link6 = base_T_link6[:3, :3]
+        
+        # 将夹爪坐标系的偏移转换到基座坐标系
         offset_base = R_base_link6 @ np.array(tcp_offset_local)
+        
+        # 应用偏移：目标 = 按钮 - 偏移
         target_base = button_base.copy()
         target_base[:3] = button_base[:3] - offset_base
+        
+        # ===== 调试输出 =====
+        self.get_logger().info("【TCP偏移补偿】")
+        self.get_logger().info(f"  按钮位置 (基座系): ({button_base[0]:.4f}, {button_base[1]:.4f}, {button_base[2]:.4f})")
+        self.get_logger().info(f"  TCP偏移 (夹爪系): ({tcp_offset_local[0]:.4f}, {tcp_offset_local[1]:.4f}, {tcp_offset_local[2]:.4f})")
+        self.get_logger().info(f"  偏移量 (基座系): ({offset_base[0]:.4f}, {offset_base[1]:.4f}, {offset_base[2]:.4f})")
+        self.get_logger().info(f"  目标位置 (基座系): ({target_base[0]:.4f}, {target_base[1]:.4f}, {target_base[2]:.4f})")
+        
         return target_base
 
     def _publish_target_marker(self, target_xyz) -> None:
