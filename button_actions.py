@@ -95,9 +95,9 @@ USE_6D_POSE = True   # True=使用6D位姿(含姿态), False=仅使用位置(末
 ACTION_TYPE = 'plugin'  # 'toggle'/'plugin'/'push'/'knob'
 
 # === 控制模式 ===
-USE_MOVEIT = False  # ROS2启动脚本: 纯SDK模式
+USE_MOVEIT = True  # ROS2启动脚本: 启用MoveIt2粗定位
 
-# === 精调与调试开关 ===
+# === 精调与调试开关 === 
 ENABLE_CARTESIAN_FINE_TUNE = False    # True=MoveIt后允许笛卡尔微调, False=严格使用MoveIt结果
 CARTESIAN_FINE_TUNE_THRESHOLD = 0.008  # 超过该距离(米)才触发微调
 DEBUG_IK_SOLVER = False               # True=打印每个IK求解细节
@@ -106,7 +106,7 @@ AUTO_FINE_TUNE_SPEED = 12             # 自动精调的默认SDK速度
 
 # === Plugin (插拔连接器) 配置 ===
 PLUGIN_GRIPPER_OPEN = 60000     # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
-PLUGIN_INSERT_DEPTH = 0.03      # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
+PLUGIN_INSERT_DEPTH = 0.02      # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
 PLUGIN_GRIPPER_HOLD = 500     # 闭合夹持宽度 (单位: 0.001mm, 范围: 0~70000, 建议: 20000~40000)
 PLUGIN_INSERT_SPEED = 100       # 插入速度 (单位: 无量纲, 范围: 0~100)
 PLUGIN_EXTRACT_SPEED = 100      # 拔出速度 (单位: 无量纲, 范围: 0~100)
@@ -123,7 +123,7 @@ TOGGLE_TOGGLE_SPEED = 30        # 拨动速度 (单位: 无量纲, 范围: 0~100
 
 # === Push (按压按钮) 配置 ===
 PUSH_GRIPPER_CLOSE = 0          # 夹爪闭合值 (单位: 0.001mm, 范围: 0~70000, 0=完全闭合)
-PUSH_INSERT_DEPTH = 0.008        # 按压深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
+PUSH_INSERT_DEPTH = 0.002        # 按压深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.01~0.05)
 PUSH_HOLD_TIME = 0.5              # 保持时间 (单位: 秒, 范围: 0~无限, 建议: 1~5)
 PUSH_PRESS_SPEED = 90           # 按压/回撤速度 (单位: 无量纲, 0~100)
 
@@ -139,10 +139,10 @@ CARTESIAN_HIGH_ACCEL_PROFILE = 'impulse'   # 高加速度场景使用的自定�
 
 # === Knob (旋转旋钮) 配置 ===
 KNOB_GRIPPER_OPEN = 45000       # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
-KNOB_INSERT_DEPTH = 0.02        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
+KNOB_INSERT_DEPTH = 0.005        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
 KNOB_GRIPPER_HOLD = 8000       # 闭合夹持宽度 (单位: 0.001mm, 范围: 0~70000, 建议: 15000~35000)
 KNOB_ROTATION_ANGLE = 45        # 旋转角度 (单位: 度, 范围: -360~360, 建议: 30~180)
-KNOB_ROTATION_DIRECTION = 'ccw'  # 旋转方向: 'cw'=顺时针(右旋), 'ccw'=逆时针(左旋)
+KNOB_ROTATION_DIRECTION = 'cw'  # 旋转方向: 'cw'=顺时针(右旋), 'ccw'=逆时针(左旋)
 KNOB_INSERT_SPEED = 100          # 插入速度 (单位: 无量纲, 范围: 0~100)
 KNOB_ROTATION_SPEED = 60        # 旋转速度 (单位: 无量纲, 范围: 0~100)
 
@@ -177,6 +177,7 @@ MAX_TRAIL_POINTS = 100          # 最大尾迹点数
 # 这是已知限制，需要ROS2 Humble+或pymoveit2库
 # 因此在ROS2 Foxy环境中自动禁用MoveIt2，使用SDK模式
 MOVEIT_AVAILABLE = False
+MOVEIT_INITIALIZED = False  # 标记MoveIt2是否已初始化
 move_group = None
 moveit_node = None  # ROS2 node for MoveIt2
 ros2_executor = None  # ROS2 executor for spinning
@@ -2374,6 +2375,184 @@ def action_knob():
     print("✓✓✓ Knob 操作完成！✓✓✓")
     print("="*70)
     return True
+
+
+# ========================================
+# 公开初始化函数（供外部调用）
+# ========================================
+
+def initialize_moveit2(external_node=None):
+    """
+    初始化MoveIt2（可被外部模块调用）
+    
+    Args:
+        external_node: 外部已创建的ROS2 Node实例（可选）
+                      如果提供，将复用该节点；否则创建新节点
+    
+    Returns:
+        bool: 初始化是否成功
+    """
+    global MOVEIT_AVAILABLE, MOVEIT_INITIALIZED, move_group, moveit_node
+    global joint_state_publisher, joint_state_timer, ros2_executor, ros2_spin_thread
+    
+    if not USE_MOVEIT:
+        print("  ℹ️  USE_MOVEIT=False，跳过MoveIt2初始化")
+        return False
+    
+    if not MOVEIT_AVAILABLE:
+        print("  ℹ️  MOVEIT_AVAILABLE=False，跳过MoveIt2初始化")
+        return False
+    
+    if MOVEIT_INITIALIZED:
+        print("  ℹ️  MoveIt2已初始化，跳过")
+        return True
+    
+    try:
+        import rclpy
+        import rclpy.executors
+        import threading
+        import time as time_module
+        from sensor_msgs.msg import JointState
+        
+        print("\n初始化MoveIt2...")
+        
+        # 确保rclpy已初始化（外部调用时可能已初始化）
+        if not rclpy.ok():
+            print("  ⚠️  rclpy未初始化，尝试初始化...")
+            try:
+                rclpy.init()
+                print("  ✓ rclpy初始化成功")
+            except Exception as e:
+                print(f"  ✗ rclpy初始化失败: {e}")
+                return False
+        
+        # 创建或复用节点
+        if external_node is not None:
+            moveit_node = external_node
+            print("  ✓ 使用外部提供的ROS2节点")
+        else:
+            node_name = f'button_action_moveit_{int(time_module.time() * 1000)}'
+            moveit_node = Node(node_name)
+            print(f"  ✓ 创建新ROS2节点: {node_name}")
+        
+        # 启动joint_states发布器
+        joint_state_publisher = moveit_node.create_publisher(JointState, '/joint_states', 10)
+        joint_state_timer = moveit_node.create_timer(0.1, publish_joint_states_callback)
+        print("  ✓ joint_states发布器已启动 (10Hz)")
+        
+        # 创建Action Client
+        move_group = ActionClient(moveit_node, MoveGroupAction, '/move_action')
+        print("  ✓ Action Client已创建")
+        
+        # 如果是外部节点，由外部负责spin；否则启动后台spin线程
+        if external_node is None:
+            ros2_executor = rclpy.executors.SingleThreadedExecutor()
+            ros2_executor.add_node(moveit_node)
+            ros2_spin_thread = threading.Thread(target=ros2_executor.spin, daemon=True)
+            ros2_spin_thread.start()
+            print("  ✓ ROS2 spin线程已启动")
+        else:
+            print("  ℹ️  使用外部节点，跳过spin线程启动")
+        
+        # 等待joint_states开始发布
+        time_module.sleep(0.5)
+        
+        # 等待action server可用
+        print("  ⏳ 等待MoveIt2 action server...")
+        timeout = 15.0
+        start_time = time_module.time()
+        
+        while not move_group.server_is_ready():
+            time_module.sleep(0.2)
+            elapsed = time_module.time() - start_time
+            if elapsed > timeout:
+                print("  ⚠️  MoveIt2 action server不可用（超时）")
+                print("  💡 提示: 请确保 MoveIt2 服务已启动")
+                print("      启动命令: ./start_moveit2_clean.sh")
+                
+                # 清理资源
+                cleanup_moveit2_resources()
+                MOVEIT_AVAILABLE = False
+                return False
+            
+            if int(elapsed) % 5 == 0 and int(elapsed) > 0:
+                print(f"  ⏳ 仍在等待... ({elapsed:.0f}s/{timeout:.0f}s)")
+        
+        # 🔧 关键修复：ROS2 Foxy Bug - server_is_ready()返回True后，实际还需要额外时间
+        print("  ✓ Action server 已就绪，等待服务完全启动...")
+        time_module.sleep(3.0)  # 额外等待3秒确保action server真正可用
+        
+        # 🔧 验证：尝试发送一个测试请求来确认server真正可用
+        print("  ⏳ 验证 action server 是否真正可用...")
+        test_timeout = 5.0
+        test_start = time_module.time()
+        server_verified = False
+        
+        while time_module.time() - test_start < test_timeout:
+            if move_group.server_is_ready():
+                server_verified = True
+                break
+            time_module.sleep(0.5)
+        
+        if not server_verified:
+            print("  ⚠️  Action server 验证失败")
+            cleanup_moveit2_resources()
+            MOVEIT_AVAILABLE = False
+            return False
+        
+        print("  ✓ MoveIt2初始化完成")
+        print(f"  ✓ Action client已连接并验证: /move_action")
+        MOVEIT_INITIALIZED = True
+        return True
+        
+    except Exception as e:
+        print(f"  ✗ MoveIt2初始化失败: {e}")
+        import traceback
+        traceback.print_exc()
+        cleanup_moveit2_resources()
+        MOVEIT_AVAILABLE = False
+        return False
+
+
+def cleanup_moveit2_resources():
+    """清理MoveIt2资源（内部函数）"""
+    global move_group, joint_state_timer, joint_state_publisher
+    global ros2_executor, ros2_spin_thread, moveit_node
+    
+    try:
+        if move_group is not None:
+            move_group.destroy()
+            move_group = None
+    except:
+        pass
+    
+    try:
+        if joint_state_timer is not None:
+            joint_state_timer.cancel()
+            joint_state_timer = None
+    except:
+        pass
+    
+    try:
+        if moveit_node is not None and joint_state_publisher is not None:
+            moveit_node.destroy_publisher(joint_state_publisher)
+    except:
+        pass
+    joint_state_publisher = None
+    
+    try:
+        if ros2_executor is not None:
+            ros2_executor.shutdown()
+            ros2_executor = None
+    except:
+        pass
+    
+    try:
+        if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
+            ros2_spin_thread.join(timeout=1.0)
+        ros2_spin_thread = None
+    except:
+        pass
 
 
 # ========================================

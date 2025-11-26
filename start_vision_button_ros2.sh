@@ -17,7 +17,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 USE_RVIZ=false
-START_CAMERA=true
+START_CAMERA=false  # Direct版本独占相机，不启动ROS节点
 START_TF=true
 USE_MOVEIT=true
 MOTION_STRATEGY="cartesian"
@@ -120,6 +120,18 @@ else
     echo -e "${YELLOW}⚠️  未找到 ~/ros2_foxy_ws/install/setup.bash, 将跳过本地 workspace${NC}"
 fi
 
+# 检查并 source piper_ros 工作空间
+PIPER_ROS_SETUP="${PROJECT_ROOT}/piper_ros/install/setup.bash"
+if [[ -f "${PIPER_ROS_SETUP}" ]]; then
+    set +u
+    source "${PIPER_ROS_SETUP}" 2>/dev/null || true
+    set -u
+    echo -e "${GREEN}✓ 已 source piper_ros/install/setup.bash${NC}"
+else
+    echo -e "${YELLOW}⚠️  未找到 piper_ros/install/setup.bash${NC}"
+    echo -e "${YELLOW}    MoveIt2 需要先编译 piper_ros 工作空间${NC}"
+fi
+
 if ! python3 -c "import rclpy" >/dev/null 2>&1; then
     echo -e "${RED}✗ Python rclpy 不可用，请检查 ROS2 Python 依赖${NC}"
     exit 1
@@ -142,6 +154,14 @@ fi
 if [[ ! -f "$PROJECT_ROOT/yolo_button.pt" ]]; then
     echo -e "${YELLOW}⚠️  未发现 yolo_button.pt，Ultralytics 将 fallback 默认模型${NC}"
 fi
+
+# --- 定义 gnome_launch 函数（需要在 check_moveit2 之前定义）---
+gnome_launch() {
+    local title="$1"
+    shift
+    local cmd="$*"
+    gnome-terminal --tab --title="$title" -- bash -c "$cmd; exec bash"
+}
 
 # --- 自动写入 button_actions.py 配置 ---
 update_config() {
@@ -176,12 +196,31 @@ check_moveit2() {
         fi
         echo -e "${GREEN}✓ MoveIt2 已安装${NC}"
         
+        # 检查 MoveIt2 配置包是否存在（检查多个可能的包名）
+        local moveit_pkg=""
+        if ros2 pkg list 2>/dev/null | grep -q "^piper_with_gripper_moveit$"; then
+            moveit_pkg="piper_with_gripper_moveit"
+            echo -e "${GREEN}✓ 找到 MoveIt2 配置包: ${moveit_pkg}${NC}"
+        elif ros2 pkg list 2>/dev/null | grep -q "^piper_moveit_config$"; then
+            moveit_pkg="piper_moveit_config"
+            echo -e "${GREEN}✓ 找到 MoveIt2 配置包: ${moveit_pkg}${NC}"
+        else
+            echo -e "${YELLOW}⚠️  未找到 MoveIt2 配置包，请先编译 piper_ros 工作空间:${NC}"
+            echo -e "${YELLOW}    cd $PROJECT_ROOT/piper_ros && colcon build${NC}"
+            echo -e "${YELLOW}    将跳过 MoveIt2 自动启动${NC}"
+            return
+        fi
+        
         # 检查 MoveIt2 服务是否运行
         if ! ros2 node list 2>/dev/null | grep -q move_group; then
-            echo -e "${YELLOW}⚠️  MoveIt2 服务未运行，将自动启动...${NC}"
-            gnome_launch "moveit2" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && ros2 launch piper_moveit_config demo.launch.py"
-            sleep 5
-            echo -e "${GREEN}✓ MoveIt2 服务已启动${NC}"
+            echo -e "${YELLOW}⚠️  MoveIt2 服务未运行，正在自动启动...${NC}"
+            echo -e "${RED}================================${NC}"
+            echo -e "${RED}请先手动在另一个终端运行:${NC}"
+            echo -e "${RED}  cd $PROJECT_ROOT${NC}"
+            echo -e "${RED}  ./start_moveit2_clean.sh${NC}"
+            echo -e "${RED}等待 MoveIt2 完全启动后，再重新运行本脚本${NC}"
+            echo -e "${RED}================================${NC}"
+            exit 1
         else
             echo -e "${GREEN}✓ MoveIt2 服务已运行${NC}"
         fi
@@ -198,11 +237,17 @@ echo -e "${CYAN}清理历史进程...${NC}"
 if pgrep -f vision_button_action_ros2.py >/dev/null; then
     pkill -f vision_button_action_ros2.py || true
 fi
-if pgrep -f realsense_yolo_button_interactive_ros2_sub.py >/dev/null; then
-    pkill -f realsense_yolo_button_interactive_ros2_sub.py || true
+if pgrep -f realsense_yolo_button_interactive_ros2_direct.py >/dev/null; then
+    pkill -f realsense_yolo_button_interactive_ros2_direct.py || true
 fi
 if pgrep -f piper_tf_publisher_ros2.py >/dev/null; then
     pkill -f piper_tf_publisher_ros2.py || true
+fi
+# 清理可能占用相机的 RealSense 节点
+if pgrep -f realsense2_camera_node >/dev/null; then
+    echo -e "${YELLOW}  发现旧的 RealSense 相机节点，正在清理...${NC}"
+    pkill -f realsense2_camera_node || true
+    sleep 2
 fi
 
 echo -e "${GREEN}✓ 旧节点已清除${NC}"
@@ -210,34 +255,29 @@ echo -e "${GREEN}✓ 旧节点已清除${NC}"
 export MPLCONFIGDIR=/tmp/mpl-cache-ros2
 mkdir -p "$MPLCONFIGDIR"
 
-gnome_launch() {
-    local title="$1"
-    shift
-    local cmd="$*"
-    gnome-terminal --tab --title="$title" -- bash -c "$cmd; exec bash"
-}
-
 STEP=1
 
 if $START_CAMERA; then
-    echo -e "${CYAN}[${STEP}/5] 启动 RealSense 相机${NC}"
+    echo -e "${CYAN}[${STEP}/5] 启动 RealSense 相机 ROS2 节点${NC}"
+    echo -e "${YELLOW}  警告：如果使用Direct版本，将与ROS节点冲突！${NC}"
+    echo -e "${YELLOW}  建议使用 --skip-camera 或修改脚本 START_CAMERA=false${NC}"
     gnome_launch "realsense" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && ${REALSENSE_LAUNCH}"
     sleep 3
     STEP=$((STEP+1))
 else
-    echo -e "${YELLOW}跳过 RealSense 启动，假定外部已提供 /camera/** 话题${NC}"
+    echo -e "${GREEN}✓ 跳过 RealSense ROS2节点（Direct版本独占相机）${NC}"
 fi
 
 if $START_TF; then
     echo -e "${CYAN}[${STEP}/5] 启动 TF 发布器${NC}"
-    gnome_launch "piper_tf" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && python3 piper_tf_publisher_ros2.py"
+    gnome_launch "piper_tf" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && [[ -f piper_ros/install/setup.bash ]] && source piper_ros/install/setup.bash; python3 piper_tf_publisher_ros2.py"
     sleep 2
     STEP=$((STEP+1))
 fi
 
-echo -e "${CYAN}[${STEP}/5] 启动交互式按钮检测器${NC}"
+echo -e "${CYAN}[${STEP}/5] 启动交互式按钮检测器 (Direct直读相机版)${NC}"
 # 注意：必须使用系统 Python 3.8 以匹配 ROS2 Foxy 的 rclpy，不能激活 conda 3.9 环境
-gnome_launch "button_detector" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && source ~/ros2_foxy_ws/install/setup.bash 2>/dev/null && export MPLCONFIGDIR=${MPLCONFIGDIR} && /usr/bin/python3 realsense_yolo_button_interactive_ros2_sub.py"
+gnome_launch "button_detector" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && source ~/ros2_foxy_ws/install/setup.bash 2>/dev/null && [[ -f piper_ros/install/setup.bash ]] && source piper_ros/install/setup.bash 2>/dev/null; export MPLCONFIGDIR=${MPLCONFIGDIR} && /usr/bin/python3 realsense_yolo_button_interactive_ros2_direct.py"
 sleep 2
 STEP=$((STEP+1))
 
@@ -248,7 +288,7 @@ if $USE_RVIZ; then
 fi
 
 echo -e "${CYAN}[${STEP}/5] 启动视觉按钮执行节点${NC}"
-gnome_launch "vision_button_action" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && python3 vision_button_action_ros2.py"
+gnome_launch "vision_button_action" "cd $PROJECT_ROOT && source /opt/ros/foxy/setup.bash && [[ -f piper_ros/install/setup.bash ]] && source piper_ros/install/setup.bash 2>/dev/null; python3 vision_button_action_ros2.py"
 sleep 2
 
 cat <<'NOTE'

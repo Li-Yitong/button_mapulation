@@ -74,7 +74,13 @@ def mouse_callback(event, x, y, flags, param):
     mouse_x, mouse_y = x, y
     
     if event == cv2.EVENT_LBUTTONDOWN:
-        print(f"\n[鼠标点击] 位置: ({x}, {y})")
+        TIP_BAR_HEIGHT = 60
+        corrected_y = y - TIP_BAR_HEIGHT
+        
+        print(f"\n[鼠标点击] 原始: ({x}, {y}), 修正: ({x}, {corrected_y})")
+        
+        if corrected_y < 0:
+            return
         
         detections_to_check = paused_detections if is_paused else all_detections
         
@@ -82,7 +88,7 @@ def mouse_callback(event, x, y, flags, param):
         for idx, det in enumerate(detections_to_check):
             x1, y1, x2, y2, class_name, conf, center_3d = det
             
-            if x1 <= x <= x2 and y1 <= y <= y2:
+            if x1 <= x <= x2 and y1 <= corrected_y <= y2:
                 print(f" → ✓ 匹配按钮 #{idx}")
                 found = True
                 selected_button_index = idx
@@ -212,13 +218,23 @@ def visualize_detections(color_img, detections, selected_idx):
             cv2.putText(annotated, coord_text, (x1, y2 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     
+    tip_bg = np.zeros((60, annotated.shape[1], 3), dtype=np.uint8)
+    tip_bg[:] = (50, 50, 50)
+    
+    cv2.putText(tip_bg, "Step 1: Click on a button to select", (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(tip_bg, "Step 2: Press ENTER to confirm | ESC to cancel", (10, 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    
+    cv2.putText(tip_bg, "[SPACE] Pause/Resume", (annotated.shape[1] - 350, 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    
     global current_fps
     fps_text = f"FPS: {current_fps:.1f}"
-    cv2.putText(annotated, fps_text, (annotated.shape[1] - 160, 30),
+    cv2.putText(tip_bg, fps_text, (annotated.shape[1] - 120, 35),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    instructions = "Click target, ENTER confirm, ESC cancel, SPACE pause"
-    cv2.putText(annotated, instructions, (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    
+    annotated = np.vstack([tip_bg, annotated])
     return annotated
 
 

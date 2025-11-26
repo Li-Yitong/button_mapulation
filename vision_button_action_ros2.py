@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import traceback
 from typing import Callable, Dict, Optional
+import threading
 
 import numpy as np
 import rclpy
@@ -33,12 +34,12 @@ class VisionButtonActionNode(Node):
 
     def __init__(self) -> None:
         super().__init__("vision_button_action_ros2")
-
+ 
         # ---- 参数 & Qos ----
         self.declare_parameter("object_point_topic", "/object_point")
         self.declare_parameter("button_type_topic", "/button_type")
         self.declare_parameter("target_marker_topic", "/target_button_base")
-        self.declare_parameter("tcp_offset_local", [-0.018, 0.007, 0.063])
+        self.declare_parameter("tcp_offset_local", [-0.051, 0.007, 0.080])
         self.declare_parameter("process_rate", 10.0)
 
         self.object_topic = self.get_parameter("object_point_topic").get_parameter_value().string_value
@@ -66,6 +67,10 @@ class VisionButtonActionNode(Node):
         self.marker_pub = self.create_publisher(Marker, self.marker_topic, qos)
         self.create_subscription(PointStamped, self.object_topic, self._object_point_callback, qos)
         self.create_subscription(String, self.button_type_topic, self._button_type_callback, qos)
+
+        # 动作执行线程状态
+        self._action_thread: Optional[threading.Thread] = None
+        self._action_lock = threading.Lock()
 
         self._hardware_ready = self._initialize_hardware()
         if not self._hardware_ready:
@@ -107,19 +112,30 @@ class VisionButtonActionNode(Node):
         if self.button_center is None or self.button_type is None:
             return
 
-        try:
-            self.get_logger().info(f"开始处理按钮: type={self.button_type}")
-            success = self._execute_button_action(self.button_center, self.button_type)
-            if success:
-                self.get_logger().info("按钮操作已完成")
-            else:
-                self.get_logger().error("按钮操作失败, 请检查日志")
-        except Exception as exc:  # 鼓励鲁棒性
-            self.get_logger().error(f"执行按钮操作时异常: {exc}")
-            self.get_logger().debug(traceback.format_exc())
-        finally:
-            self.button_center = None
-            self.button_type = None
+        # 避免重复启动
+        if self._action_thread is not None and self._action_thread.is_alive():
+            self.get_logger().warn("已有动作在执行，忽略新的按钮请求")
+            return
+
+        button_center = np.copy(self.button_center)
+        button_type = str(self.button_type)
+        self.button_center = None
+        self.button_type = None
+
+        def worker():
+            try:
+                self.get_logger().info(f"开始处理按钮: type={button_type}")
+                success = self._execute_button_action(button_center, button_type)
+                if success:
+                    self.get_logger().info("按钮操作已完成")
+                else:
+                    self.get_logger().error("按钮操作失败, 请检查日志")
+            except Exception as exc:
+                self.get_logger().error(f"执行按钮操作时异常: {exc}")
+                self.get_logger().debug(traceback.format_exc())
+
+        self._action_thread = threading.Thread(target=worker, daemon=True)
+        self._action_thread.start()
 
     # ------------------------------------------------------------------
     # 具体执行步骤
@@ -185,6 +201,16 @@ class VisionButtonActionNode(Node):
         button_actions.piper_arm = piper_arm
         self.piper = piper
         self.piper_arm = piper_arm
+        
+        # 初始化MoveIt2（复用当前节点）
+        if button_actions.USE_MOVEIT:
+            self.get_logger().info("初始化 MoveIt2...")
+            moveit_success = button_actions.initialize_moveit2(external_node=self)
+            if moveit_success:
+                self.get_logger().info("✓ MoveIt2 初始化成功")
+            else:
+                self.get_logger().warn("⚠️  MoveIt2 初始化失败，将使用SDK模式")
+        
         return True
 
     def _transform_camera_to_base(self, button_center_camera: np.ndarray, current_joints) -> np.ndarray:
