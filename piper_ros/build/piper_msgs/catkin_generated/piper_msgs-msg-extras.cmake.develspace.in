@@ -1,0 +1,2 @@
+set(piper_msgs_MESSAGE_FILES "/home/robot/button/V3.0/project2/piper_ros/src/piper_msgs/msg/PiperStatusMsg.msg;/home/robot/button/V3.0/project2/piper_ros/src/piper_msgs/msg/PosCmd.msg;/home/robot/button/V3.0/project2/piper_ros/src/piper_msgs/msg/PiperEulerPose.msg")
+set(piper_msgs_SERVICE_FILES "/home/robot/button/V3.0/project2/piper_ros/src/piper_msgs/srv/Enable.srv;/home/robot/button/V3.0/project2/piper_ros/src/piper_msgs/srv/Gripper.srv;/home/robot/button/V3.0/project2/piper_ros/src/piper_msgs/srv/GoZero.srv")

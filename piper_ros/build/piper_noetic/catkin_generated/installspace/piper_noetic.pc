@@ -1,0 +1,8 @@
+prefix=/home/robot/button/V3.0/project2/piper_ros/install
+
+Name: piper_noetic
+Description: Description of piper_noetic
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

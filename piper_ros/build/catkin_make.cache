@@ -1,0 +1,2 @@
+piper:piper_description:piper_moveit/moveit_ctrl:piper_moveit/piper_no_gripper_moveit:piper_moveit/piper_with_gripper_moveit:piper_msgs:piper_noetic:piper_sim/piper_gazebo:piper_sim/piper_mujoco:piper_x_description
+-DCATKIN_DEVEL_PREFIX=/home/robot/button/V3.0/project2/piper_ros/devel -DCMAKE_INSTALL_PREFIX=/home/robot/button/V3.0/project2/piper_ros/install -G Unix Makefiles
