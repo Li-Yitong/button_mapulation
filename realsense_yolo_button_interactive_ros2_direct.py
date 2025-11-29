@@ -4,10 +4,11 @@
 使用 pyrealsense2 直接读取相机（高性能）+ ROS2 发布结果
 解决订阅话题导致的卡顿和幻影问题
 修复：ROS2 spin线程独立运行，避免阻塞
+新增：面板法向量计算（支持倾斜面板）
 """
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, Vector3
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker
 import cv2
@@ -22,6 +23,9 @@ from piper_sdk import C_PiperInterface_V2
 from piper_arm import PiperArm
 from utils.utils_math import quaternion_to_rotation_matrix
 import math
+
+# 导入面板法向量计算工具
+from utils.utils_plane import compute_robust_panel_normal, visualize_panel_normal
 
 PI = math.pi
 
@@ -59,6 +63,12 @@ frame_counter = 0
 last_fps_time = time.time()
 fps_counter = 0
 current_fps = 0.0
+
+# 面板法向量缓存
+global_panel_normal = None
+global_panel_info = None
+panel_last_update = 0.0
+PANEL_CACHE_TIME = 2.0  # 缓存2秒
 
 
 # ========================================
@@ -288,6 +298,65 @@ def extract_roi_cloud(depth_data, color_data, bbox, depth_intrin, verbose=False)
 # ========================================
 # 坐标转换：相机 → 基座
 # ========================================
+def transform_normal_camera_to_base(normal_camera, piper, piper_arm):
+    """
+    将相机坐标系的法向量转换到基座坐标系
+    
+    注意：法向量是方向向量，只需要旋转变换（不需要平移）
+    
+    参数:
+        normal_camera: 相机系法向量 [nx, ny, nz]
+        piper: 机械臂接口
+        piper_arm: 机械臂运动学对象
+    
+    返回:
+        基座系法向量 [nx', ny', nz'] 或 None
+    """
+    try:
+        # 获取当前关节角度
+        msg = piper.GetArmJointMsgs()
+        current_joints = [
+            msg.joint_state.joint_1 * 1e-3 * PI / 180.0,
+            msg.joint_state.joint_2 * 1e-3 * PI / 180.0,
+            msg.joint_state.joint_3 * 1e-3 * PI / 180.0,
+            msg.joint_state.joint_4 * 1e-3 * PI / 180.0,
+            msg.joint_state.joint_5 * 1e-3 * PI / 180.0,
+            msg.joint_state.joint_6 * 1e-3 * PI / 180.0,
+        ]
+        
+        # 正运动学：基座 → 末端link6（4x4齐次变换矩阵）
+        base_T_link6 = piper_arm.forward_kinematics(current_joints)
+        
+        # 提取旋转矩阵（基座到link6）
+        R_base_to_link6 = base_T_link6[:3, :3]
+        
+        # 相机到末端link6的固定变换（手眼标定结果）
+        link6_T_camera = np.eye(4)
+        link6_T_camera[:3, :3] = quaternion_to_rotation_matrix(piper_arm.link6_q_camera)
+        link6_T_camera[:3, 3] = piper_arm.link6_t_camera
+        
+        # 提取旋转矩阵（link6到相机）
+        R_link6_to_camera = link6_T_camera[:3, :3]
+        
+        # 组合旋转矩阵：相机 → link6 → 基座
+        # normal_base = R_base_to_link6 @ R_link6_to_camera @ normal_camera
+        R_base_to_camera = R_base_to_link6 @ R_link6_to_camera
+        
+        # 旋转法向量（只需要旋转，不需要平移）
+        normal_base = R_base_to_camera @ np.array(normal_camera)
+        
+        # 归一化
+        normal_base = normal_base / np.linalg.norm(normal_base)
+        
+        return normal_base.tolist()
+    
+    except Exception as e:
+        print(f"❌ 法向量坐标转换失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def transform_camera_to_base(button_camera, piper, piper_arm):
     """将相机坐标系的按钮位置转换到基座坐标系"""
     try:
@@ -348,8 +417,9 @@ class ButtonDetectorNode(Node):
         self.point_pub = self.create_publisher(PointStamped, '/object_point', 10)
         self.type_pub = self.create_publisher(String, '/button_type', 10)
         self.marker_pub = self.create_publisher(Marker, '/object_center_marker', 10)
+        self.normal_pub = self.create_publisher(Vector3, '/button_normal', 10)  # 新增：法向量话题
         
-        self.get_logger().info("✓ ROS2发布器已创建")
+        self.get_logger().info("✓ ROS2发布器已创建（包括法向量话题）")
         self.get_logger().info("="*70)
     
     def publish_result(self, center_3d, class_name):
@@ -387,6 +457,69 @@ class ButtonDetectorNode(Node):
         marker.color.b = 0.0
         marker.color.a = 1.0
         self.marker_pub.publish(marker)
+    
+    def publish_result_with_normal(self, center_3d, class_name, normal_vector, in_camera_frame=True):
+        """
+        发布检测结果到ROS2话题（包含法向量）
+        
+        参数:
+            center_3d: 按钮中心3D坐标
+            class_name: 按钮类型
+            normal_vector: 面板法向量
+            in_camera_frame: 法向量是否在相机坐标系（True）还是基座坐标系（False）
+        """
+        # 发布基本信息
+        self.publish_result(center_3d, class_name)
+        
+        # 发布法向量（注意：使用Stamped消息可以标记坐标系）
+        # 但Vector3没有header，所以通过日志说明
+        normal_msg = Vector3()
+        normal_msg.x = float(normal_vector[0])
+        normal_msg.y = float(normal_vector[1])
+        normal_msg.z = float(normal_vector[2])
+        self.normal_pub.publish(normal_msg)
+        
+        frame_info = "相机坐标系" if in_camera_frame else "基座坐标系"
+        self.get_logger().info(f"  ✓ 法向量已发布 ({frame_info}): ({normal_vector[0]:.4f}, {normal_vector[1]:.4f}, {normal_vector[2]:.4f})")
+        
+        # 发布法向量可视化（箭头）
+        arrow_marker = Marker()
+        # 根据法向量坐标系设置frame_id
+        arrow_marker.header.frame_id = "camera" if in_camera_frame else "base_link"
+        arrow_marker.header.stamp = self.get_clock().now().to_msg()
+        arrow_marker.ns = "panel_normal"
+        arrow_marker.id = 1
+        arrow_marker.type = Marker.ARROW
+        arrow_marker.action = Marker.ADD
+        
+        # 箭头起点：按钮中心
+        arrow_marker.points = []
+        from geometry_msgs.msg import Point
+        start_point = Point()
+        start_point.x = center_3d[0]
+        start_point.y = center_3d[1]
+        start_point.z = center_3d[2]
+        arrow_marker.points.append(start_point)
+        
+        # 箭头终点：沿法向量延伸10cm
+        # 如果在相机系，法向量指向相机（减去）
+        # 如果在基座系，法向量指向外侧（加上）
+        direction = -1.0 if in_camera_frame else 1.0
+        end_point = Point()
+        end_point.x = center_3d[0] + direction * normal_vector[0] * 0.1
+        end_point.y = center_3d[1] + direction * normal_vector[1] * 0.1
+        end_point.z = center_3d[2] + direction * normal_vector[2] * 0.1
+        arrow_marker.points.append(end_point)
+        
+        # 箭头样式
+        arrow_marker.scale.x = 0.005  # 箭头轴直径
+        arrow_marker.scale.y = 0.01   # 箭头头部直径
+        arrow_marker.scale.z = 0.01   # 箭头头部长度
+        arrow_marker.color.r = 0.0
+        arrow_marker.color.g = 1.0
+        arrow_marker.color.b = 1.0
+        arrow_marker.color.a = 1.0
+        self.marker_pub.publish(arrow_marker)
 
 
 def main(args=None):
@@ -434,6 +567,7 @@ def main(args=None):
     global frame_counter, last_fps_time, fps_counter, current_fps
     global is_paused, paused_frame, paused_detections
     global selected_box_signature
+    global global_panel_normal, global_panel_info, panel_last_update
     
     try:
         node.get_logger().info("✓ 开始检测...")
@@ -514,9 +648,40 @@ def main(args=None):
                     all_detections.append((x1, y1, x2, y2, class_name, conf, None))
                 
                 sync_selection_with_detections()
+                
+                # 🔧 新增：计算全局面板法向量（带缓存）
+                current_time = time.time()
+                if len(all_detections) >= 2 and (current_time - panel_last_update > PANEL_CACHE_TIME):
+                    try:
+                        panel_info = compute_robust_panel_normal(
+                            all_detections, 
+                            depth_data, 
+                            depth_intrin,
+                            expand_ratio=0.2,
+                            min_buttons=2,
+                            verbose=False  # 避免打印过多信息
+                        )
+                        
+                        if panel_info is not None:
+                            global_panel_normal = panel_info['normal']
+                            global_panel_info = panel_info
+                            panel_last_update = current_time
+                            # node.get_logger().info(f"✓ 面板法向量更新: ({global_panel_normal[0]:.3f}, {global_panel_normal[1]:.3f}, {global_panel_normal[2]:.3f})")
+                    except Exception as e:
+                        node.get_logger().warn(f"⚠️  面板法向量计算失败: {e}")
             
             # 显示
             display_img = visualize_detections(color_data, all_detections, selected_button_index)
+            
+            # 🔧 新增：叠加面板法向量可视化
+            if global_panel_info is not None and len(all_detections) >= 2:
+                display_img = visualize_panel_normal(
+                    display_img, 
+                    all_detections, 
+                    global_panel_info,
+                    show_rings=False  # 不显示环形区域，避免画面混乱
+                )
+            
             cv2.imshow('detection', display_img)
             
             # 键盘处理
@@ -556,16 +721,56 @@ def main(args=None):
                         node.get_logger().info(f"  按钮类型: {class_name}")
                         node.get_logger().info(f"  相机坐标: ({center_3d[0]:.3f}, {center_3d[1]:.3f}, {center_3d[2]:.3f}) m")
                         
+                        # 🔧 新增：使用全局法向量（如果可用）
+                        use_normal = None
+                        if global_panel_normal is not None:
+                            use_normal = global_panel_normal
+                            node.get_logger().info(f"  ✓ 使用缓存的面板法向量")
+                        else:
+                            # 回退：尝试局部计算（仅当前按钮）
+                            node.get_logger().info(f"  ⚠️  无全局法向量，尝试局部计算...")
+                            try:
+                                local_panel_info = compute_robust_panel_normal(
+                                    [det],  # 只用当前按钮
+                                    current_depth_data,
+                                    current_depth_intrin,
+                                    expand_ratio=0.3,  # 局部计算时扩展稍大
+                                    min_buttons=1,
+                                    verbose=True
+                                )
+                                if local_panel_info is not None:
+                                    use_normal = local_panel_info['normal']
+                                    node.get_logger().info(f"  ✓ 局部法向量计算成功")
+                            except Exception as e:
+                                node.get_logger().warn(f"  ⚠️  局部法向量计算失败: {e}")
+                        
+                        if use_normal is not None:
+                            node.get_logger().info(f"  面板法向量(相机系): ({use_normal[0]:.4f}, {use_normal[1]:.4f}, {use_normal[2]:.4f})")
+                        else:
+                            node.get_logger().warn(f"  ⚠️  无法计算法向量，将使用默认垂直方向")
+                            use_normal = np.array([0.0, 0.0, -1.0])  # 默认：垂直于相机
+                        
+                        # 🔧 转换法向量到基座坐标系（默认启用）
+                        normal_in_camera_frame = True  # 初始：相机系
                         if node.piper is not None:
                             base_3d = transform_camera_to_base(center_3d, node.piper, node.piper_arm)
                             if base_3d is not None:
-                                node.get_logger().info(f"  基座坐标: ({base_3d[0]:.3f}, {base_3d[1]:.3f}, {base_3d[2]:.3f}) m")
+                                node.get_logger().info(f"  按钮位置(基座系): ({base_3d[0]:.3f}, {base_3d[1]:.3f}, {base_3d[2]:.3f}) m")
+                            
+                            # 转换法向量到基座系
+                            use_normal_base = transform_normal_camera_to_base(use_normal, node.piper, node.piper_arm)
+                            if use_normal_base is not None:
+                                node.get_logger().info(f"  面板法向量(基座系): ({use_normal_base[0]:.4f}, {use_normal_base[1]:.4f}, {use_normal_base[2]:.4f})")
+                                use_normal = use_normal_base
+                                normal_in_camera_frame = False  # 标记为基座系
+                            else:
+                                node.get_logger().warn(f"  ⚠️  法向量坐标转换失败，将使用相机系法向量")
                         
                         node.get_logger().info(f"{'='*70}")
                         
-                        # 发布到ROS2
-                        node.publish_result(center_3d, class_name)
-                        node.get_logger().info("✓ 已发布到 ROS2 话题")
+                        # 发布到ROS2（包含法向量）
+                        node.publish_result_with_normal(center_3d, class_name, use_normal, in_camera_frame=normal_in_camera_frame)
+                        node.get_logger().info("✓ 已发布到 ROS2 话题（包含法向量）")
                         
                         selected_button_index = -1
                         selected_button_locked = False

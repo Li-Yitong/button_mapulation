@@ -74,13 +74,12 @@ PI = math.pi
 factor = 1000 * 180 / PI
 # === 标准起始/结束位姿 (可选，用于视觉检测等待位置) ===
 # HOME位姿：一个安全的观察位姿，机械臂在此位置等待视觉检测
-# 注意：J5限位为[-70°, 70°]，保留5°安全余量
 HOME_JOINTS = [
     -4.68 * PI / 180,   # J1: -4.68°
     86.06 * PI / 180,   # J2: 86.06°
     -86.16 * PI / 180,  # J3: -86.16°
     5.27 * PI / 180,    # J4: 5.27°
-    65.0 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
+    69.12 * PI / 180,   # J5: 69.12°
     0.94 * PI / 180     # J6: 0.94°
 ]
 HOME_GRIPPER = 0  # 夹爪闭合状态（0 = 完全闭合）
@@ -100,9 +99,6 @@ TARGET_Z = 0.20  # Z坐标 (使用末端朝下姿态可达更高位置)
 # 新增：完整位姿矩阵（包含法向量对齐）
 # 当 vision_button_action_ros2 提供时，将使用此矩阵代替 TARGET_X/Y/Z + TARGET_ROLL/PITCH/YAW
 TARGET_POSE_MATRIX = None  # 4x4 np.ndarray 或 None
-
-# 新增：面板对齐位姿（保存在对齐阶段计算的姿态）
-PANEL_ALIGN_POSE = None  # 4x4 np.ndarray 或 None，供后续按钮操作继承
 
 # 姿态 (单位：弧度) - 相对于默认姿态（末端朝前）的旋转
 # 注意：Roll=Pitch=Yaw=0 表示默认姿态（末端朝前），这是一个可达的姿态
@@ -1676,7 +1672,7 @@ def precise_move_to_pose(target_pose, speed=15, description="笛卡尔精调", m
     return final_joints
 
 
-def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientation=True, speed_limit=None, profile=None, target_z_axis=None):
+def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientation=True, speed_limit=None, profile=None):
     """
     沿末端执行器z轴方向移动（保持当前姿态或理想姿态）
     使用自定义笛卡尔路径规划以提高可靠性
@@ -1686,8 +1682,6 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
         distance: 移动距离 (米)，正值=沿末端+Z轴方向，负值=沿末端-Z轴方向
         speed: 移动速度
         lock_orientation: True=使用理想姿态方向（补偿IK误差），False=使用实际姿态方向
-        target_z_axis: 【新增】指定的Z轴方向 [nx, ny, nz]（优先级最高）
-                      如果提供，直接使用该方向（法向量），忽略lock_orientation
     
     返回:
         新的关节角度
@@ -1695,9 +1689,7 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
     说明:
         末端坐标系Z轴 = 旋转矩阵第3列
         直接沿末端Z轴方向移动，正值=+Z方向，负值=-Z方向
-        
-        优先级顺序：
-        1. target_z_axis（法向量对齐） > 2. lock_orientation（理想姿态） > 3. 当前姿态
+        当lock_orientation=True时，使用目标姿态的Z轴方向，避免IK误差导致的方向偏移
     """
     global piper_arm, move_group, piper
     
@@ -1711,52 +1703,26 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
     print(f"    [{current_T[1,0]:7.4f}, {current_T[1,1]:7.4f}, {current_T[1,2]:7.4f}]")
     print(f"    [{current_T[2,0]:7.4f}, {current_T[2,1]:7.4f}, {current_T[2,2]:7.4f}]")
     
-    # === 决定使用哪个Z轴方向（优先级：target_z_axis > lock_orientation > 实际姿态） ===
-    if target_z_axis is not None:
-        # 【优先级1】直接使用指定的Z轴（法向量方向，垂直于面板）
-        z_axis = np.array(target_z_axis) / np.linalg.norm(target_z_axis)
-        print(f"  ✓✓✓ 使用指定Z轴方向（法向量对齐，垂直于面板）")
-        print(f"  末端Z轴方向 (基坐标系): ({z_axis[0]:7.4f}, {z_axis[1]:7.4f}, {z_axis[2]:7.4f})")
-    elif lock_orientation:
-        # 【优先级2】使用理想姿态的Z轴方向（原有逻辑）
-        if TARGET_POSE_MATRIX is not None:
-            ideal_T = TARGET_POSE_MATRIX
-        else:
-            ideal_T = create_target_transform(
-                TARGET_X, TARGET_Y, TARGET_Z,
-                TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
-                USE_6D_POSE
-            )
+    # 决定使用哪个Z轴方向
+    if lock_orientation:
+        # 使用理想姿态的Z轴方向（从目标姿态配置获取）
+        ideal_T = create_target_transform(
+            TARGET_X, TARGET_Y, TARGET_Z,
+            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+            USE_6D_POSE
+        )
         z_axis = ideal_T[:3, 2]  # 理想Z轴方向
         print(f"  ✓ 使用姿态锁定模式（理想Z轴方向）")
-        print(f"  末端Z轴方向 (基坐标系): ({z_axis[0]:7.4f}, {z_axis[1]:7.4f}, {z_axis[2]:7.4f})")
     else:
-        # 【优先级3】使用当前实际姿态的Z轴方向
+        # 使用当前实际姿态的Z轴方向
         z_axis = current_T[:3, 2]
         print(f"  使用实际姿态方向")
-        print(f"  末端Z轴方向 (基坐标系): ({z_axis[0]:7.4f}, {z_axis[1]:7.4f}, {z_axis[2]:7.4f})")
     
     print(f"  移动距离: {distance*100:.1f}cm")
+    print(f"  末端Z轴方向 (基坐标系): ({z_axis[0]:7.4f}, {z_axis[1]:7.4f}, {z_axis[2]:7.4f})")
     
-    # === 验证对齐性 ===
-    if target_z_axis is not None:
-        # 验证当前Z轴与指定Z轴（法向量）的对齐性
-        actual_z = current_T[:3, 2]
-        target_z_normalized = np.array(target_z_axis) / np.linalg.norm(target_z_axis)
-        dot_product = np.dot(actual_z, target_z_normalized)
-        angle_error_deg = np.degrees(np.arccos(np.clip(abs(dot_product), 0, 1)))
-        
-        print(f"  [对齐验证] 当前Z轴 vs 法向量:")
-        print(f"    实际Z轴: ({actual_z[0]:7.4f}, {actual_z[1]:7.4f}, {actual_z[2]:7.4f})")
-        print(f"    法向量:  ({target_z_normalized[0]:7.4f}, {target_z_normalized[1]:7.4f}, {target_z_normalized[2]:7.4f})")
-        print(f"    夹角: {angle_error_deg:.2f}°", end="")
-        if angle_error_deg < 5.0:
-            print(" ✓ 已对齐（Gripper垂直于面板）")
-        elif angle_error_deg < 15.0:
-            print(" ⚠️ 轻微偏差")
-        else:
-            print(" ✗ 偏差较大！可能影响按压效果")
-    elif lock_orientation:
+    # 如果启用了姿态锁定，显示对比信息
+    if lock_orientation:
         actual_z = current_T[:3, 2]
         ideal_z = z_axis
         angle_error = np.arccos(np.clip(np.dot(actual_z, ideal_z), -1.0, 1.0)) * 180.0 / PI
@@ -2155,22 +2121,13 @@ def action_plugin():
     
     # 步骤3: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是IK计算的理论值
-    # 🔧 新增：提取Z轴方向（法向量）
-    if TARGET_POSE_MATRIX is not None:
-        target_z_axis = TARGET_POSE_MATRIX[:3, 2]
-        print(f"\n步骤3: 沿法向量方向插入 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-        print(f"  ✓ 法向量方向: ({target_z_axis[0]:.3f}, {target_z_axis[1]:.3f}, {target_z_axis[2]:.3f})")
-    else:
-        target_z_axis = None
-        print(f"\n步骤3: 沿末端z轴插入 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-        print(f"  ⚠️  无法向量，使用默认姿态")
-    
+    print(f"\n步骤3: 沿末端z轴插入 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
     actual_joints_step3 = get_current_joints()  # 获取实际当前位置
     actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
     actual_xyz_step3 = actual_T_step3[:3, 3]
     print(f"  实际起点: XYZ=({actual_xyz_step3[0]:.3f}, {actual_xyz_step3[1]:.3f}, {actual_xyz_step3[2]:.3f})")
     
-    joints_insert = move_along_end_effector_z(actual_joints_step3, PLUGIN_INSERT_DEPTH, PLUGIN_INSERT_SPEED, target_z_axis=target_z_axis)
+    joints_insert = move_along_end_effector_z(actual_joints_step3, PLUGIN_INSERT_DEPTH, PLUGIN_INSERT_SPEED)
     if not joints_insert:
         return False
     time.sleep(0.1)
@@ -2182,11 +2139,7 @@ def action_plugin():
     
     # 步骤5: 沿末端z轴拔出
     # 【关键修复】使用实际当前位置
-    if TARGET_POSE_MATRIX is not None:
-        print(f"\n步骤5: 沿法向量方向拔出 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-    else:
-        print(f"\n步骤5: 沿末端z轴拔出 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-    
+    print(f"\n步骤5: 沿末端z轴拔出 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
     actual_joints_step5 = get_current_joints()  # 获取插入后的实际位置
     actual_T_step5 = piper_arm.forward_kinematics(actual_joints_step5)
     actual_xyz_step5 = actual_T_step5[:3, 3]
@@ -2196,7 +2149,6 @@ def action_plugin():
         actual_joints_step5,
         -PLUGIN_INSERT_DEPTH,
         PLUGIN_EXTRACT_SPEED,
-        target_z_axis=target_z_axis,  # ← 传入法向量
         speed_limit=CARTESIAN_HIGH_SPEED_LIMIT,
         profile=CARTESIAN_HIGH_ACCEL_PROFILE
     )
@@ -2314,22 +2266,13 @@ def action_toggle():
     
     # 步骤4: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是上一步计算的理论值
-    # 🔧 新增：提取Z轴方向（法向量）
-    if TARGET_POSE_MATRIX is not None:
-        target_z_axis = TARGET_POSE_MATRIX[:3, 2]
-        print(f"\n步骤4: 沿法向量方向插入 {TOGGLE_INSERT_DEPTH*100:.1f}cm...")
-        print(f"  ✓ 法向量方向: ({target_z_axis[0]:.3f}, {target_z_axis[1]:.3f}, {target_z_axis[2]:.3f})")
-    else:
-        target_z_axis = None
-        print(f"\n步骤4: 沿末端z轴插入 {TOGGLE_INSERT_DEPTH*100:.1f}cm...")
-        print(f"  ⚠️  无法向量，使用默认姿态")
-    
+    print(f"\n步骤4: 沿末端z轴插入 {TOGGLE_INSERT_DEPTH*100:.1f}cm...")
     actual_joints_step4 = get_current_joints()  # 获取实际当前位置
     actual_T_step4 = piper_arm.forward_kinematics(actual_joints_step4)
     actual_xyz_step4 = actual_T_step4[:3, 3]
     print(f"  实际起点: XYZ=({actual_xyz_step4[0]:.3f}, {actual_xyz_step4[1]:.3f}, {actual_xyz_step4[2]:.3f})")
     
-    joints_insert = move_along_end_effector_z(actual_joints_step4, TOGGLE_INSERT_DEPTH, TOGGLE_INSERT_SPEED, target_z_axis=target_z_axis)
+    joints_insert = move_along_end_effector_z(actual_joints_step4, TOGGLE_INSERT_DEPTH, TOGGLE_INSERT_SPEED)
     if not joints_insert:
         return False
     time.sleep(0.5)
@@ -2489,25 +2432,20 @@ def action_push():
     # - 测试模式：从HOME位姿直接沿Z轴按压（不推荐）
     # - 正常模式：从目标位姿沿Z轴按压（与knob逻辑一致）
     
-    # 🔧 新增：提取Z轴方向（法向量）
-    if TARGET_POSE_MATRIX is not None:
-        target_z_axis = TARGET_POSE_MATRIX[:3, 2]
-        print(f"\n步骤3: 沿法向量方向按压 {total_distance*100:.1f}cm...")
-        print(f"  ✓ 法向量方向: ({target_z_axis[0]:.3f}, {target_z_axis[1]:.3f}, {target_z_axis[2]:.3f})")
+    if TEST_MODE_FROM_HOME:
+        print(f"\n步骤2 (测试模式): 沿末端Z轴按压 {total_distance*100:.1f}cm...")
     else:
-        target_z_axis = None
-        if TEST_MODE_FROM_HOME:
-            print(f"\n步骤2 (测试模式): 沿末端Z轴按压 {total_distance*100:.1f}cm...")
+        print(f"\n步骤3: 沿末端Z轴按压 {total_distance*100:.1f}cm...")
+        if TARGET_POSE_MATRIX is not None:
+            print(f"  (Z轴已对齐法向量，垂直接近面板)")
         else:
-            print(f"\n步骤3: 沿末端Z轴按压 {total_distance*100:.1f}cm...")
-            print(f"  ⚠️  无法向量，使用默认姿态")
+            print(f"  (使用默认姿态)")
     
     actual_joints = get_current_joints()
     joints_press = move_along_end_effector_z(
         actual_joints,
         total_distance,
         PUSH_PRESS_SPEED,
-        target_z_axis=target_z_axis,  # ← 传入法向量
         speed_limit=CARTESIAN_HIGH_SPEED_LIMIT,
         profile=CARTESIAN_HIGH_ACCEL_PROFILE
     )
@@ -2523,13 +2461,10 @@ def action_push():
     time.sleep(PUSH_HOLD_TIME)
     
     # 步骤5/4: 沿末端Z轴完全撤回
-    if TARGET_POSE_MATRIX is not None:
-        print(f"\n步骤5: 沿法向量方向撤回 {total_distance*100:.1f}cm...")
+    if TEST_MODE_FROM_HOME:
+        print(f"\n步骤4 (测试模式): 沿末端Z轴撤回 {total_distance*100:.1f}cm...")
     else:
-        if TEST_MODE_FROM_HOME:
-            print(f"\n步骤4 (测试模式): 沿末端Z轴撤回 {total_distance*100:.1f}cm...")
-        else:
-            print(f"\n步骤5: 沿末端Z轴撤回 {total_distance*100:.1f}cm...")
+        print(f"\n步骤5: 沿末端Z轴撤回 {total_distance*100:.1f}cm...")
     
     actual_joints_after_press = get_current_joints()
     actual_T_after_press = piper_arm.forward_kinematics(actual_joints_after_press)
@@ -2540,7 +2475,6 @@ def action_push():
         actual_joints_after_press,
         -total_distance,
         PUSH_PRESS_SPEED,
-        target_z_axis=target_z_axis,  # ← 传入法向量（撤回时也用相同方向）
         speed_limit=CARTESIAN_HIGH_SPEED_LIMIT,
         profile=CARTESIAN_HIGH_ACCEL_PROFILE
     )
@@ -2654,22 +2588,13 @@ def action_knob():
     # 步骤3: 沿末端z轴插入
     if abs(KNOB_INSERT_DEPTH) > 1e-6:
         # 使用实际到达的关节角度，而不是IK计算的理论值
-        # 🔧 新增：提取Z轴方向（法向量）
-        if TARGET_POSE_MATRIX is not None:
-            target_z_axis = TARGET_POSE_MATRIX[:3, 2]
-            print(f"\n步骤3: 沿法向量方向插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
-            print(f"  ✓ 法向量方向: ({target_z_axis[0]:.3f}, {target_z_axis[1]:.3f}, {target_z_axis[2]:.3f})")
-        else:
-            target_z_axis = None
-            print(f"\n步骤3: 沿末端z轴插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
-            print(f"  ⚠️  无法向量，使用默认姿态")
-        
+        print(f"\n步骤3: 沿末端z轴插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
         actual_joints_step3 = get_current_joints()  # 获取实际当前位置
         actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
         actual_xyz_step3 = actual_T_step3[:3, 3]
         print(f"  实际起点: XYZ=({actual_xyz_step3[0]:.3f}, {actual_xyz_step3[1]:.3f}, {actual_xyz_step3[2]:.3f})")
         
-        joints_insert = move_along_end_effector_z(actual_joints_step3, KNOB_INSERT_DEPTH, KNOB_INSERT_SPEED, target_z_axis=target_z_axis)
+        joints_insert = move_along_end_effector_z(actual_joints_step3, KNOB_INSERT_DEPTH, KNOB_INSERT_SPEED)
         if not joints_insert:
             return False
         time.sleep(0.1)

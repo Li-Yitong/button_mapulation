@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import math
+import time
 import traceback
 from typing import Callable, Dict, Optional
 import threading
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, Vector3
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -24,6 +25,7 @@ from piper_arm import PiperArm
 
 from utils.utils_math import quaternion_to_rotation_matrix
 from utils.utils_piper import enable_fun
+from utils.utils_plane import compute_approach_pose
 
 import button_actions
 from button_actions import PI, action_knob, action_plugin, action_push, action_toggle
@@ -54,9 +56,21 @@ class VisionButtonActionNode(Node):
         qos.history = HistoryPolicy.KEEP_LAST
 
         # ---- 运行时状态 ----
+        # 三阶段工作流状态机
+        self.workflow_state = "HOME"  # HOME → PANEL_ALIGN → BUTTON_ACTION
+        self.panel_aligned = False  # 是否已完成面板对齐
+        
+        # 数据存储
         self.button_center: Optional[np.ndarray] = None
         self.button_type: Optional[str] = None
+        self.button_normal: Optional[np.ndarray] = None  # 面板法向量（基座系）
+        self.panel_align_pose: Optional[np.ndarray] = None  # 面板对齐位姿（4x4矩阵）
         self.last_point_stamp: Optional[float] = None
+        
+        # 面板区域估计（用于计算面板中心）
+        self.detected_buttons: list = []  # 存储检测到的所有按钮位置（基座系）
+        self.panel_center_base: Optional[np.ndarray] = None  # 估计的面板中心（基座系）
+        
         self.action_map = {
             "toggle": action_toggle,
             "plugin": action_plugin,
@@ -67,10 +81,14 @@ class VisionButtonActionNode(Node):
         self.marker_pub = self.create_publisher(Marker, self.marker_topic, qos)
         self.create_subscription(PointStamped, self.object_topic, self._object_point_callback, qos)
         self.create_subscription(String, self.button_type_topic, self._button_type_callback, qos)
+        self.create_subscription(Vector3, "/button_normal", self._button_normal_callback, qos)
 
         # 动作执行线程状态
         self._action_thread: Optional[threading.Thread] = None
         self._action_lock = threading.Lock()
+        
+        # 用户交互线程
+        self._user_input_thread: Optional[threading.Thread] = None
 
         self._hardware_ready = self._initialize_hardware()
         if not self._hardware_ready:
@@ -91,9 +109,40 @@ class VisionButtonActionNode(Node):
             return
         self.button_center = np.array([msg.point.x, msg.point.y, msg.point.z], dtype=float)
         self.last_point_stamp = self.get_clock().now().nanoseconds / 1e9
-        self.get_logger().info(
-            f"收到按钮位置: ({msg.point.x:.4f}, {msg.point.y:.4f}, {msg.point.z:.4f})"
-        )
+        
+        # 🔧 修复：在HOME状态下，无论是否有法向量都收集按钮位置
+        # 法向量是由视觉系统基于多个按钮位置计算出来的，所以要先收集按钮
+        if self.workflow_state == "HOME":
+            # 转换到基座坐标系
+            try:
+                current_joints = button_actions.get_current_joints()
+                button_base = self._transform_camera_to_base(self.button_center, current_joints)
+                
+                # 避免重复添加相同位置的按钮（容差5cm）
+                is_duplicate = False
+                for existing in self.detected_buttons:
+                    if np.linalg.norm(button_base[:3] - existing[:3]) < 0.05:
+                        is_duplicate = True
+                        break
+                
+                if not is_duplicate:
+                    self.detected_buttons.append(button_base[:3])
+                    self.get_logger().info(
+                        f"收到按钮位置: ({msg.point.x:.4f}, {msg.point.y:.4f}, {msg.point.z:.4f}) "
+                        f"[已收集 {len(self.detected_buttons)} 个按钮]"
+                    )
+                else:
+                    self.get_logger().debug(
+                        f"收到按钮位置: ({msg.point.x:.4f}, {msg.point.y:.4f}, {msg.point.z:.4f}) [重复，跳过]"
+                    )
+            except Exception as e:
+                self.get_logger().warn(f"收集按钮位置时出错: {e}")
+        elif self.workflow_state == "BUTTON_ACTION":
+            # 在按钮操作阶段，只记录不收集
+            self.get_logger().info(
+                f"收到按钮位置: ({msg.point.x:.4f}, {msg.point.y:.4f}, {msg.point.z:.4f})"
+            )
+        # PANEL_ALIGN阶段不处理
 
     def _button_type_callback(self, msg: String) -> None:
         button_type = msg.data.strip().lower()
@@ -102,45 +151,327 @@ class VisionButtonActionNode(Node):
             return
         self.button_type = button_type
         self.get_logger().info(f"收到按钮类型: {self.button_type}")
+    
+    def _button_normal_callback(self, msg: Vector3) -> None:
+        """接收面板法向量（基座坐标系）"""
+        if any(math.isnan(val) for val in (msg.x, msg.y, msg.z)):
+            self.get_logger().warn("忽略包含 NaN 的法向量")
+            return
+        
+        normal_raw = np.array([msg.x, msg.y, msg.z], dtype=float)
+        
+        # 验证法向量方向：应该指向外侧（远离机械臂基座）
+        # 方法：计算当前末端位置，法向量应该从面板指向末端方向
+        current_joints = button_actions.get_current_joints()
+        base_T_link6 = self.piper_arm.forward_kinematics(current_joints)
+        camera_position = base_T_link6[:3, 3]
+        
+        # 假设面板在相机前方，法向量应该指向相机方向
+        # 如果法向量与"相机-面板"方向相反，则翻转
+        # 简化判断：法向量的Z分量应该为正（指向上方/外侧）或X分量为正（指向前方）
+        # 更精确的方法：检查法向量是否指向相机
+        
+        # 使用相机位置作为参考：法向量应该大致指向相机方向
+        # 计算从面板（假设在视野中心）到相机的向量
+        # 由于没有面板位置，使用简化规则：
+        # 在机械臂前侧操作时，法向量X分量通常为正（指向机械臂）
+        # 或者Z分量为正（倾斜面板时）
+        
+        # 🔧 关键判断：法向量应该指向"外侧"（远离面板表面）
+        # 对于前置相机：法向量的Z分量应该>0（指向上方）或X分量>0（指向前方）
+        # 如果两者都是负数，说明指向内侧，需要翻转
+        
+        normal = normal_raw.copy()
+        flip_reason = None
+        
+        # 规则1：优先检查Z分量（高度方向）
+        # 对于水平/倾斜面板，法向量的Z分量通常应该>0（指向上方外侧）
+        if abs(normal[2]) > 0.5:  # Z分量占主导
+            if normal[2] < 0:  # 指向下方，错误
+                normal = -normal
+                flip_reason = "Z分量<0 (指向下方，已翻转)"
+        
+        # 规则2：检查X分量（前后方向）
+        # 对于竖直面板，法向量的X分量应该>0（指向机械臂前方）
+        elif abs(normal[0]) > 0.5:  # X分量占主导
+            if normal[0] < 0:  # 指向后方，错误
+                normal = -normal
+                flip_reason = "X分量<0 (指向后方，已翻转)"
+        
+        # 规则3：综合判断（X和Z都不占主导时）
+        else:
+            # 法向量应该指向机械臂工作空间的外侧
+            # 对于前方的面板：X>0 或 Z>0
+            if normal[0] < 0 and normal[2] < 0:
+                normal = -normal
+                flip_reason = "X,Z均<0 (指向内侧，已翻转)"
+        
+        self.button_normal = normal
+        
+        if flip_reason:
+            self.get_logger().warn(f"⚠️  法向量方向异常，自动修正: {flip_reason}")
+            self.get_logger().info(
+                f"  原始法向量: ({normal_raw[0]:.4f}, {normal_raw[1]:.4f}, {normal_raw[2]:.4f})"
+            )
+            self.get_logger().info(
+                f"  修正后法向量: ({normal[0]:.4f}, {normal[1]:.4f}, {normal[2]:.4f})"
+            )
+        else:
+            self.get_logger().info(
+                f"收到面板法向量(基座系): ({msg.x:.4f}, {msg.y:.4f}, {msg.z:.4f}) ✓方向正确"
+            )
 
     # ------------------------------------------------------------------
-    # 主处理逻辑
+    # 用户交互循环
     # ------------------------------------------------------------------
-    def _process_if_ready(self) -> None:
-        if not self._hardware_ready:
-            return
-        if self.button_center is None or self.button_type is None:
-            return
-
-        # 避免重复启动
-        if self._action_thread is not None and self._action_thread.is_alive():
-            self.get_logger().warn("已有动作在执行，忽略新的按钮请求")
-            return
-
+    def _user_interaction_loop(self) -> None:
+        """用户交互主循环 - 三阶段工作流"""
+        try:
+            while True:
+                if self.workflow_state == "HOME":
+                    self._handle_home_state()
+                elif self.workflow_state == "PANEL_ALIGN":
+                    self._handle_panel_align_state()
+                elif self.workflow_state == "BUTTON_ACTION":
+                    self._handle_button_action_state()
+                else:
+                    time.sleep(0.5)
+        except Exception as e:
+            self.get_logger().error(f"用户交互循环异常: {e}")
+            import traceback
+            self.get_logger().debug(traceback.format_exc())
+    
+    def _handle_home_state(self) -> None:
+        """阶段1: HOME观察位姿"""
+        # 清空之前的数据
+        self.detected_buttons.clear()
+        self.panel_center_base = None
+        
+        print("\n" + "="*70)
+        print("阶段1: HOME观察位姿")
+        print("="*70)
+        print("机械臂已在HOME位姿，相机正在观察工作区域")
+        print("请确保视觉检测节点正在运行")
+        print("\n系统正在实时计算：")
+        print("  - 面板法向量（基于RANSAC平面拟合）")
+        print("  - 按钮位置分布（自动收集检测结果）")
+        print("\n按 Enter 键进入面板对齐阶段...")
+        input()
+        
+        self.get_logger().info("✓ 用户确认，检查法向量数据...")
+        
+        # 检查是否已接收到法向量（应该是实时计算的）
+        if self.button_normal is not None:
+            self.get_logger().info(f"✓ 已接收面板法向量: ({self.button_normal[0]:.4f}, {self.button_normal[1]:.4f}, {self.button_normal[2]:.4f})")
+            self.get_logger().info(f"✓ 收集到 {len(self.detected_buttons)} 个按钮位置")
+            self.workflow_state = "PANEL_ALIGN"
+        else:
+            # 如果还没有法向量，再等待5秒
+            self.get_logger().warn("⚠️  尚未接收到法向量数据，等待5秒...")
+            print("\n⚠️  等待视觉系统计算法向量（5秒）...")
+            
+            timeout = 5.0
+            start_time = time.time()
+            while self.button_normal is None and (time.time() - start_time) < timeout:
+                time.sleep(0.1)
+            
+            if self.button_normal is not None:
+                self.get_logger().info(f"✓ 已接收面板法向量: ({self.button_normal[0]:.4f}, {self.button_normal[1]:.4f}, {self.button_normal[2]:.4f})")
+                self.get_logger().info(f"✓ 收集到 {len(self.detected_buttons)} 个按钮位置")
+                self.workflow_state = "PANEL_ALIGN"
+            else:
+                self.get_logger().error("✗ 未接收到法向量数据")
+                print("\n✗ 视觉系统未计算出法向量，可能原因：")
+                print("  1. 视觉检测节点未运行")
+                print("  2. 检测到的按钮数量<2")
+                print("  3. 深度数据质量不佳")
+                print("\n请检查视觉节点日志，然后重试")
+                time.sleep(2)
+    
+    def _handle_panel_align_state(self) -> None:
+        """阶段2: 面板对齐位姿"""
+        print("\n" + "="*70)
+        print("阶段2: 面板对齐位姿")
+        print("="*70)
+        print(f"检测到面板法向量: ({self.button_normal[0]:.3f}, {self.button_normal[1]:.3f}, {self.button_normal[2]:.3f})")
+        
+        if len(self.detected_buttons) > 0:
+            print(f"已收集 {len(self.detected_buttons)} 个按钮位置，将计算面板中心")
+        else:
+            print("未收集到按钮位置，将保持当前位置")
+        
+        print("系统将微调机械臂到面板中心，并调整姿态对齐法向量")
+        print("\n按 Enter 键执行面板对齐动作...")
+        input()
+        
+        # 计算面板对齐位姿
+        self.get_logger().info("计算面板对齐位姿...")
+        current_joints = button_actions.get_current_joints()
+        base_T_link6 = self.piper_arm.forward_kinematics(current_joints)
+        current_position = base_T_link6[:3, 3]
+        
+        self.get_logger().info(f"  当前末端位置: ({current_position[0]:.3f}, {current_position[1]:.3f}, {current_position[2]:.3f})")
+        self.get_logger().info(f"  法向量方向: ({self.button_normal[0]:.3f}, {self.button_normal[1]:.3f}, {self.button_normal[2]:.3f})")
+        
+        # === 计算面板中心位置 ===
+        target_position = current_position.copy()
+        
+        if len(self.detected_buttons) >= 2:
+            # 有多个按钮：计算边界框中心
+            buttons_array = np.array(self.detected_buttons)
+            bbox_min = np.min(buttons_array, axis=0)
+            bbox_max = np.max(buttons_array, axis=0)
+            bbox_center = (bbox_min + bbox_max) / 2.0
+            bbox_size = bbox_max - bbox_min
+            
+            self.get_logger().info(f"  按钮边界框: X({bbox_size[0]*100:.1f}cm) Y({bbox_size[1]*100:.1f}cm) Z({bbox_size[2]*100:.1f}cm)")
+            self.get_logger().info(f"  边界框中心: ({bbox_center[0]:.3f}, {bbox_center[1]:.3f}, {bbox_center[2]:.3f})")
+            
+            # 计算从当前位置到边界框中心的偏移
+            offset_to_center = bbox_center - current_position
+            offset_distance = np.linalg.norm(offset_to_center[:2])  # 只考虑XY平面距离
+            
+            self.get_logger().info(f"  与面板中心偏移: {offset_distance*100:.1f}cm")
+            
+            # 阈值判断：如果偏移>10cm，则微调到中心；否则保持当前位置
+            if offset_distance > 0.10:
+                # 微调到面板中心（沿面板平面移动，不改变深度）
+                # 只调整XY，保持Z高度和深度方向不变
+                target_position[0] = bbox_center[0]
+                target_position[1] = bbox_center[1]
+                # Z保持当前高度或使用面板中心的高度（取决于按钮分布）
+                if bbox_size[2] < 0.05:  # 按钮Z方向分布<5cm，说明在同一平面
+                    target_position[2] = bbox_center[2]
+                
+                self.get_logger().info(f"  ✓ 微调到面板中心: ({target_position[0]:.3f}, {target_position[1]:.3f}, {target_position[2]:.3f})")
+                self.get_logger().info(f"    移动距离: {np.linalg.norm(target_position - current_position)*100:.1f}cm")
+            else:
+                self.get_logger().info(f"  ✓ 当前位置接近面板中心({offset_distance*100:.1f}cm)，保持不变")
+                
+        elif len(self.detected_buttons) == 1:
+            # 只有一个按钮：假设它接近面板中心，微调到该位置
+            button_pos = self.detected_buttons[0]
+            offset = button_pos - current_position
+            offset_distance = np.linalg.norm(offset[:2])
+            
+            self.get_logger().info(f"  检测到1个按钮: ({button_pos[0]:.3f}, {button_pos[1]:.3f}, {button_pos[2]:.3f})")
+            self.get_logger().info(f"  与按钮偏移: {offset_distance*100:.1f}cm")
+            
+            if offset_distance > 0.10:
+                target_position[0] = button_pos[0]
+                target_position[1] = button_pos[1]
+                target_position[2] = button_pos[2]
+                self.get_logger().info(f"  ✓ 微调到按钮位置")
+            else:
+                self.get_logger().info(f"  ✓ 当前位置接近按钮，保持不变")
+        else:
+            self.get_logger().info(f"  ⚠️  无按钮数据，保持当前位置")
+        
+        # === 构造对齐姿态（Gripper Z对齐法向量）===
+        z_axis = self.button_normal / np.linalg.norm(self.button_normal)
+        
+        # 选择参考向量构造X轴
+        world_up = np.array([0, 0, 1])
+        if abs(np.dot(z_axis, world_up)) > 0.9:
+            world_up = np.array([0, 1, 0])
+        
+        # X轴在面板平面内
+        x_axis = world_up - np.dot(world_up, z_axis) * z_axis
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        
+        # Y轴 = Z × X
+        y_axis = np.cross(z_axis, x_axis)
+        
+        # 构造齐次变换矩阵
+        self.panel_align_pose = np.eye(4)
+        self.panel_align_pose[:3, 0] = x_axis
+        self.panel_align_pose[:3, 1] = y_axis
+        self.panel_align_pose[:3, 2] = z_axis  # Gripper Z对齐法向量
+        self.panel_align_pose[:3, 3] = target_position  # 微调后的位置
+        
+        self.get_logger().info(f"  最终对齐位置: ({self.panel_align_pose[0,3]:.3f}, {self.panel_align_pose[1,3]:.3f}, {self.panel_align_pose[2,3]:.3f})")
+        self.get_logger().info(f"  夹爪Z轴方向: ({self.panel_align_pose[0,2]:.3f}, {self.panel_align_pose[1,2]:.3f}, {self.panel_align_pose[2,2]:.3f})")
+        
+        # 执行移动到面板对齐位姿
+        success = self._move_to_panel_align_pose()
+        
+        if success:
+            self.panel_aligned = True
+            button_actions.PANEL_ALIGN_POSE = self.panel_align_pose
+            self.panel_center_base = target_position
+            self.get_logger().info("✓ 已到达面板对齐位姿")
+            self.workflow_state = "BUTTON_ACTION"
+        else:
+            self.get_logger().error("✗ 面板对齐失败，返回HOME状态")
+            self.workflow_state = "HOME"
+    
+    def _handle_button_action_state(self) -> None:
+        """阶段3: 按钮操作执行"""
+        print("\n" + "="*70)
+        print("阶段3: 按钮操作执行")
+        print("="*70)
+        print("机械臂已对齐面板，夹爪Z轴垂直于面板")
+        print("请选择要操作的按钮（视觉检测会提供按钮列表）")
+        print("\n等待接收按钮位置和类型数据...")
+        print("(提示: 在视觉检测界面点击按钮)")
+        
+        # 等待接收按钮数据
+        while self.button_center is None or self.button_type is None:
+            time.sleep(0.1)
+        
+        # 获取按钮数据
         button_center = np.copy(self.button_center)
         button_type = str(self.button_type)
         self.button_center = None
         self.button_type = None
+        
+        self.get_logger().info(f"✓ 接收到按钮: type={button_type}")
+        print(f"\n✓ 检测到按钮类型: {button_type}")
+        print("按 Enter 键执行按钮操作...")
+        input()
+        
+        # 执行按钮动作
+        try:
+            success = self._execute_button_action(button_center, button_type, self.button_normal)
+            if success:
+                self.get_logger().info("✓ 按钮操作完成")
+                print("\n✓ 按钮操作成功完成！")
+            else:
+                self.get_logger().error("✗ 按钮操作失败")
+                print("\n✗ 按钮操作失败，请查看日志")
+        except Exception as e:
+            self.get_logger().error(f"按钮操作异常: {e}")
+            print(f"\n✗ 操作异常: {e}")
+        
+        # 询问是否继续
+        print("\n是否继续操作其他按钮？")
+        print("  y - 继续（保持面板对齐姿态）")
+        print("  n - 返回HOME位姿")
+        choice = input("请选择 (y/n): ").strip().lower()
+        
+        if choice == 'y':
+            # 继续操作其他按钮
+            pass
+        else:
+            # 返回HOME
+            self.get_logger().info("返回HOME位姿...")
+            self._move_to_home_position()
+            self.panel_aligned = False
+            self.workflow_state = "HOME"
 
-        def worker():
-            try:
-                self.get_logger().info(f"开始处理按钮: type={button_type}")
-                success = self._execute_button_action(button_center, button_type)
-                if success:
-                    self.get_logger().info("按钮操作已完成")
-                else:
-                    self.get_logger().error("按钮操作失败, 请检查日志")
-            except Exception as exc:
-                self.get_logger().error(f"执行按钮操作时异常: {exc}")
-                self.get_logger().debug(traceback.format_exc())
-
-        self._action_thread = threading.Thread(target=worker, daemon=True)
-        self._action_thread.start()
+    # ------------------------------------------------------------------
+    # 主处理逻辑（已废弃，由用户交互循环接管）
+    # ------------------------------------------------------------------
+    def _process_if_ready(self) -> None:
+        """定时检查 - 已改为用户交互驱动，此函数保留但不执行动作"""
+        # 仅用于保持ROS2节点活跃
+        pass
 
     # ------------------------------------------------------------------
     # 具体执行步骤
     # ------------------------------------------------------------------
-    def _execute_button_action(self, button_center_camera: np.ndarray, button_type: str) -> bool:
+    def _execute_button_action(self, button_center_camera: np.ndarray, button_type: str, 
+                               button_normal_base: Optional[np.ndarray]) -> bool:
         piper = button_actions.piper
         if piper is None:
             self.get_logger().error("button_actions.piper 未初始化")
@@ -155,13 +486,34 @@ class VisionButtonActionNode(Node):
         target_base = self._apply_tcp_offset(button_base, current_joints, self.tcp_offset_local)
         self._publish_target_marker(target_base[:3])
 
-        button_actions.TARGET_X = float(target_base[0])
-        button_actions.TARGET_Y = float(target_base[1])
-        button_actions.TARGET_Z = float(target_base[2])
+        # 🔧 新增：如果有法向量，计算接近位姿并设置到 button_actions
+        if button_normal_base is not None:
+            self.get_logger().info(
+                f"✓ 使用面板法向量计算接近位姿: ({button_normal_base[0]:.4f}, "
+                f"{button_normal_base[1]:.4f}, {button_normal_base[2]:.4f})"
+            )
+            
+            # 计算接近位姿：按钮上方30cm，Gripper Z轴 = 法向量（垂直于面板）
+            approach_pose = self._compute_approach_pose_base(
+                target_base[:3], 
+                button_normal_base, 
+                approach_distance=0.30
+            )
+            
+            # 设置完整位姿矩阵到 button_actions
+            button_actions.TARGET_POSE_MATRIX = approach_pose
+            self.get_logger().info(f"  接近位置: ({approach_pose[0,3]:.4f}, {approach_pose[1,3]:.4f}, {approach_pose[2,3]:.4f})")
+            self.get_logger().info(f"  Gripper Z轴（=法向量）: ({approach_pose[0,2]:.4f}, {approach_pose[1,2]:.4f}, {approach_pose[2,2]:.4f})")
+            self.get_logger().info(f"  → Gripper Z轴垂直于面板，可直接沿Z轴按压")
+        else:
+            self.get_logger().warn("⚠️  无法向量，使用默认姿态（末端朝前）")
+            button_actions.TARGET_POSE_MATRIX = None
+            button_actions.TARGET_X = float(target_base[0])
+            button_actions.TARGET_Y = float(target_base[1])
+            button_actions.TARGET_Z = float(target_base[2])
 
         self.get_logger().info(
-            f"已更新 target XYZ = ({button_actions.TARGET_X:.4f}, "
-            f"{button_actions.TARGET_Y:.4f}, {button_actions.TARGET_Z:.4f})"
+            f"目标位置: ({target_base[0]:.4f}, {target_base[1]:.4f}, {target_base[2]:.4f})"
         )
 
         action_fn = self.action_map.get(button_type)
@@ -176,14 +528,238 @@ class VisionButtonActionNode(Node):
     # ------------------------------------------------------------------
     # 工具函数
     # ------------------------------------------------------------------
+    def _move_to_panel_align_pose(self) -> bool:
+        """
+        移动到面板对齐位姿（使用MoveIt2规划）
+        
+        返回:
+            True: 成功到达
+            False: 移动失败
+        """
+        if self.panel_align_pose is None:
+            self.get_logger().error("panel_align_pose 未计算")
+            return False
+        
+        try:
+            # 使用IK求解目标关节角
+            current_joints = button_actions.get_current_joints()
+            
+            # 先尝试精细IK
+            result = self.piper_arm.inverse_kinematics_refined(
+                self.panel_align_pose,
+                initial_guess=current_joints,
+                max_iterations=200,
+                tolerance=1e-3  # 放宽到1mm（姿态微调不需要太高精度）
+            )
+            
+            target_joints = None
+            if result is not None:
+                # 检查result的类型
+                if isinstance(result, tuple) and len(result) >= 3:
+                    joints_candidate = result[0]
+                    converged = result[1]
+                    error = result[2]
+                    
+                    # 验证joints_candidate是否为有效的关节角列表
+                    if isinstance(joints_candidate, (list, np.ndarray)) and len(joints_candidate) == 6:
+                        target_joints = joints_candidate
+                        self.get_logger().info(f"  IK求解: 收敛={converged}, 误差={error*1000:.2f}mm")
+                    else:
+                        self.get_logger().warn(f"精细IK返回异常格式: {type(joints_candidate)}, 值: {joints_candidate}")
+                else:
+                    self.get_logger().warn(f"精细IK返回异常: {type(result)}")
+            
+            if target_joints is None:
+                # 回退到普通IK
+                self.get_logger().warn("精细IK失败，尝试普通IK...")
+                target_joints = self.piper_arm.inverse_kinematics(self.panel_align_pose)
+            
+            if target_joints is None or not isinstance(target_joints, (list, np.ndarray)) or len(target_joints) != 6:
+                self.get_logger().error(f"IK求解失败，无法到达面板对齐位姿 (result type: {type(target_joints)})")
+                return False
+            
+            # 验证关节角变化幅度
+            joint_diff = np.abs(np.array(target_joints) - np.array(current_joints))
+            max_diff_deg = np.max(joint_diff) * 180.0 / PI
+            
+            if max_diff_deg > 30.0:
+                self.get_logger().error(f"✗ 关节角变化过大({max_diff_deg:.1f}°)，面板对齐应该是微调！")
+                self.get_logger().error("  可能原因：法向量方向错误或IK求解异常")
+                return False
+            
+            self.get_logger().info(f"  关节角变化: {max_diff_deg:.2f}° (微调模式 ✓)")
+            
+            self.get_logger().info(
+                f"目标关节角(度): {np.array(target_joints) * 180.0 / PI}"
+            )
+            
+            # 使用MoveIt2规划并执行
+            if button_actions.USE_MOVEIT:
+                success = button_actions.control_arm_moveit(target_joints, speed=50)
+            else:
+                success = button_actions.control_arm_sdk(target_joints, speed=50)
+            
+            if success:
+                # 验证是否到达
+                time.sleep(1.0)
+                current = button_actions.get_current_joints()
+                error = np.array(current) - np.array(target_joints)
+                max_error_deg = np.max(np.abs(error)) * 180.0 / PI
+                
+                if max_error_deg < 5.0:
+                    self.get_logger().info(f"✓ 已到达面板对齐位姿（误差 {max_error_deg:.2f}°）")
+                    return True
+                else:
+                    self.get_logger().warn(f"⚠️  面板对齐位姿误差较大（{max_error_deg:.2f}°）")
+                    return True  # 仍然继续
+            else:
+                return False
+                
+        except Exception as e:
+            self.get_logger().error(f"移动到面板对齐位姿异常: {e}")
+            import traceback
+            self.get_logger().debug(traceback.format_exc())
+            return False
+    
+    def _move_to_home_position(self) -> bool:
+        """
+        移动到HOME观察位姿
+        
+        返回:
+            True: 成功到达
+            False: 移动失败
+        """
+        if not hasattr(button_actions, 'HOME_JOINTS'):
+            self.get_logger().error("HOME_JOINTS 未定义")
+            return False
+        
+        home_joints = button_actions.HOME_JOINTS
+        home_gripper = button_actions.HOME_GRIPPER if hasattr(button_actions, 'HOME_GRIPPER') else 0
+        
+        self.get_logger().info(
+            f"目标关节角(度): {np.array(home_joints) * 180.0 / PI}"
+        )
+        
+        try:
+            # 使用SDK模式移动（更可靠）
+            piper = button_actions.piper
+            if piper is None:
+                self.get_logger().error("piper SDK 未初始化")
+                return False
+            
+            # 设置夹爪位置
+            piper.GripperCtrl(home_gripper, 1000, 0x01, 0)
+            time.sleep(0.3)
+            
+            # 转换为整数格式（SDK要求）
+            factor = 1000 * 180 / PI
+            joints_int = [int(home_joints[i] * factor) for i in range(6)]
+            
+            # 设置运动模式
+            piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
+            time.sleep(0.1)  # 等待运动模式切换生效
+            
+            # 发送关节控制指令
+            piper.JointCtrl(*joints_int)
+            self.get_logger().info("✓ HOME位姿运动指令已发送，等待到达...")
+            
+            # 估算运动时间
+            current = button_actions.get_current_joints()
+            max_joint_diff = max([abs(home_joints[i] - current[i]) for i in range(6)])
+            estimated_time = max_joint_diff / (50 / 100.0 * 2.0) + 0.5
+            estimated_time = min(estimated_time, 10.0)
+            
+            self.get_logger().info(f"  预计运动时间: {estimated_time:.1f}秒")
+            time.sleep(estimated_time)
+            
+            # 验证是否到达
+            current = button_actions.get_current_joints()
+            error = np.array(current) - np.array(home_joints)
+            max_error_deg = np.max(np.abs(error)) * 180.0 / PI
+            
+            if max_error_deg < 5.0:
+                self.get_logger().info(f"✓ 已到达HOME位姿（误差 {max_error_deg:.2f}°）")
+                return True
+            else:
+                self.get_logger().warn(f"⚠️  HOME位姿误差较大（{max_error_deg:.2f}°），但继续运行")
+                return True
+                
+        except Exception as e:
+            self.get_logger().error(f"移动到HOME位姿异常: {e}")
+            import traceback
+            self.get_logger().debug(traceback.format_exc())
+            return False
+    
+    def _enable_arm_robust(self, piper: C_PiperInterface_V2, timeout: float = 10.0) -> bool:
+        """
+        健壮的机械臂使能方法（不会exit）
+        
+        参数:
+            piper: Piper SDK接口
+            timeout: 超时时间（秒）
+        
+        返回:
+            True: 使能成功
+            False: 使能失败
+        """
+        import time
+        start_time = time.time()
+        retry_count = 0
+        
+        while time.time() - start_time < timeout:
+            retry_count += 1
+            
+            # 发送使能指令
+            piper.EnableArm(7)
+            time.sleep(0.5)  # 等待使能生效
+            
+            # 检查使能状态
+            try:
+                status = piper.GetArmLowSpdInfoMsgs()
+                enable_flag = (
+                    status.motor_1.foc_status.driver_enable_status and
+                    status.motor_2.foc_status.driver_enable_status and
+                    status.motor_3.foc_status.driver_enable_status and
+                    status.motor_4.foc_status.driver_enable_status and
+                    status.motor_5.foc_status.driver_enable_status and
+                    status.motor_6.foc_status.driver_enable_status
+                )
+                
+                if enable_flag:
+                    self.get_logger().info(f"✓ 机械臂使能成功（尝试 {retry_count} 次）")
+                    # 闭合夹爪
+                    piper.GripperCtrl(0, 1000, 0x01, 0)
+                    time.sleep(0.3)
+                    return True
+                else:
+                    self.get_logger().debug(f"使能状态: False (尝试 {retry_count}/{int(timeout)} 秒)")
+                    
+            except Exception as e:
+                self.get_logger().debug(f"读取状态失败: {e}")
+            
+            time.sleep(0.5)
+        
+        self.get_logger().error(f"✗ 机械臂使能超时（{timeout}秒内尝试 {retry_count} 次）")
+        return False
+    
     def _initialize_hardware(self) -> bool:
         """初始化 Piper SDK / PiperArm, 同步至 button_actions."""
         try:
             self.get_logger().info("初始化 Piper SDK ...")
             piper = C_PiperInterface_V2("can0")
             piper.ConnectPort()
-            piper.EnableArm(7)
-            enable_fun(piper=piper)
+            
+            # 使用更健壮的使能方法（不会exit）
+            self.get_logger().info("正在使能机械臂（最多等待10秒）...")
+            enable_success = self._enable_arm_robust(piper, timeout=10.0)
+            if not enable_success:
+                self.get_logger().error("机械臂使能失败！请检查：")
+                self.get_logger().error("  1. 机械臂是否上电")
+                self.get_logger().error("  2. 急停按钮是否释放")
+                self.get_logger().error("  3. CAN0接口是否正常")
+                self.get_logger().error("  4. 电源电压是否充足")
+                return False
+            
             self.get_logger().info("Piper SDK 初始化成功")
         except Exception as exc:
             self.get_logger().error(f"Piper SDK 初始化失败: {exc}")
@@ -210,6 +786,27 @@ class VisionButtonActionNode(Node):
                 self.get_logger().info("✓ MoveIt2 初始化成功")
             else:
                 self.get_logger().warn("⚠️  MoveIt2 初始化失败，将使用SDK模式")
+        
+        # 移动到HOME观察位姿（如果启用）
+        if button_actions.USE_HOME_POSITION and hasattr(button_actions, 'HOME_JOINTS'):
+            self.get_logger().info("正在移动到HOME观察位姿...")
+            try:
+                home_success = self._move_to_home_position()
+                if home_success:
+                    self.get_logger().info("✓ 已到达HOME位姿")
+                    self.workflow_state = "HOME"
+                else:
+                    self.get_logger().warn("⚠️  移动到HOME位姿失败，将从当前位置开始")
+            except Exception as e:
+                self.get_logger().error(f"移动到HOME位姿异常: {e}")
+                return False
+        else:
+            self.get_logger().info("跳过HOME位姿（USE_HOME_POSITION=False）")
+            self.workflow_state = "HOME"
+        
+        # 启动用户交互线程
+        self._user_input_thread = threading.Thread(target=self._user_interaction_loop, daemon=True)
+        self._user_input_thread.start()
         
         return True
 
@@ -252,9 +849,15 @@ class VisionButtonActionNode(Node):
         button_base_v3 = base_T_link6 @ link6_T_cam @ button_cam_swapped
         self.get_logger().info(f"  方案3 (轴向交换): ({button_base_v3[0]:.4f}, {button_base_v3[1]:.4f}, {button_base_v3[2]:.4f})")
         
-        # 默认使用方案1，请根据实际结果调整
+        # 🔧 使用方案1（optical直接）- 用户确认此方案正确
         button_base = button_base_v1
-        self.get_logger().warn("⚠️  当前使用方案1，若误差>10cm请根据调试日志切换方案2或3")
+        self.get_logger().info("✓ 使用方案1 (optical直接转换)")
+        
+        # 验证高度合理性（按钮应该在10cm~60cm之间）
+        if button_base[2] < 0.05 or button_base[2] > 0.70:
+            self.get_logger().warn(
+                f"⚠️  按钮高度异常: {button_base[2]*100:.1f}cm (预期范围: 5~70cm)"
+            )
         
         return button_base
 
@@ -278,6 +881,76 @@ class VisionButtonActionNode(Node):
         self.get_logger().info(f"  目标位置 (基座系): ({target_base[0]:.4f}, {target_base[1]:.4f}, {target_base[2]:.4f})")
         
         return target_base
+    
+    def _compute_approach_pose_base(self, button_position: np.ndarray, 
+                                    normal_vector: np.ndarray, 
+                                    approach_distance: float = 0.30) -> np.ndarray:
+        """
+        计算接近位姿（基座坐标系）- 正确版本
+        
+        参数:
+            button_position: 按钮位置 [x, y, z] (基座系)
+            normal_vector: 面板法向量 [nx, ny, nz] (基座系，垂直于面板指向外侧)
+            approach_distance: 接近距离（米，默认30cm）
+        
+        返回:
+            4x4齐次变换矩阵（基座系下的接近位姿）
+            
+        关键逻辑：
+        - 法向量本身就是垂直于面板（指向外侧）
+        - **Gripper的Z轴 = 法向量方向** → Gripper Z轴也垂直于面板
+        - 这样沿Gripper +Z前进 = 沿法向量方向 = 垂直接近面板
+        - 验证标准: |dot(Gripper_Z, Normal)| ≈ 1 (夹角≈0°，完全对齐)
+        """
+        # 归一化法向量
+        normal = normal_vector / np.linalg.norm(normal_vector)
+        
+        # 接近点 = 按钮中心 + 法向量 * 距离（沿法向量外侧后退）
+        approach_point = button_position + normal * approach_distance
+        
+        # === 构造Gripper Z轴对齐法向量的姿态 ===
+        # Gripper坐标系：
+        #   Z轴(蓝) = 法向量方向（垂直于面板，用于推进接近）
+        #   X轴(红) = 辅助轴（用于toggle左右拨动）
+        #   Y轴(绿) = 辅助轴
+        
+        z_axis = normal  # Z轴对准法向量（垂直于面板）
+        
+        # 选择参考向量构造X轴（在面板平面内）
+        world_up = np.array([0, 0, 1])  # 优先使用世界Z轴
+        if abs(np.dot(normal, world_up)) > 0.9:
+            # 法向量接近垂直，改用世界Y轴
+            world_up = np.array([0, 1, 0])
+        
+        # X轴 = 参考向量 - 在法向量上的投影（格拉姆-施密特正交化）
+        # 这样X轴就在面板平面内
+        x_axis = world_up - np.dot(world_up, z_axis) * z_axis
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        
+        # Y轴 = Z × X（右手系）
+        y_axis = np.cross(z_axis, x_axis)
+        
+        # 构造齐次变换矩阵
+        T_approach = np.eye(4)
+        T_approach[:3, 0] = x_axis
+        T_approach[:3, 1] = y_axis
+        T_approach[:3, 2] = z_axis  # Gripper Z = 法向量（垂直于面板）
+        T_approach[:3, 3] = approach_point
+        
+        # 验证对齐性：Z轴与法向量的夹角应该≈0°（平行）
+        dot_zn = np.dot(z_axis, normal)
+        angle_rad = np.arccos(np.clip(abs(dot_zn), 0, 1))
+        angle_deg = np.degrees(angle_rad)
+        
+        # 判断标准：夹角 < 0.01弧度（约0.57°）认为已对齐
+        is_aligned = angle_rad < 0.01
+        
+        self.get_logger().info(
+            f"  ✓ 姿态验证: Gripper_Z ∥ Normal | 夹角={angle_deg:.3f}° "
+            f"({'✓已对齐' if is_aligned else '✗未对齐，需校正'})"
+        )
+        
+        return T_approach
 
     def _publish_target_marker(self, target_xyz) -> None:
         marker = Marker()
