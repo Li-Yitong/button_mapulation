@@ -72,59 +72,16 @@ except ImportError:
 # ========================================
 PI = math.pi
 factor = 1000 * 180 / PI
-
-# ========================================
-# 新增：AprilTag绝对姿态（基座系）
-# ========================================
-# ⚠️ 重要区分：
-#   - APRILTAG_BASE_X/Y/Z：AprilTag标签本身的位置（仅用于姿态参考）
-#   - TARGET_X/Y/Z：实际按钮/旋钮的位置（动作的目标位置）
-#
-# AprilTag在基座标系下的位置和姿态（请根据实际标定结果填写）
-# 💡 这些值应该从 realsense_yolo_button_interactive_ros2_direct_april.py 
-#    显示的 [Tag in Base] 数据中获取！
-# 
-# 📐 关键理解（垂直按压时的姿态关系）:
-#    ⚠️ AprilTag的姿态 ≠ 夹爪末端的姿态！
-#    
-#    当夹爪垂直按压按钮时，夹爪末端姿态与Tag姿态的关系为：
-#    - gripper_roll  = -APRILTAG_BASE_ROLL  (Roll取反，因为法向量反向)
-#    - gripper_pitch =  APRILTAG_BASE_PITCH (Pitch相同)
-#    - gripper_yaw   =  APRILTAG_BASE_YAW   (Yaw相同)
-#    
-#    💡 这个转换已在 get_gripper_approach_rotation('perpendicular') 中自动处理！
-#
-# 🏷️ AprilTag位置（仅用于姿态参考，不是目标位置！）
-APRILTAG_BASE_X = 0.413      # Tag中心X坐标 (米)
-APRILTAG_BASE_Y = 0.042      # Tag中心Y坐标 (米)
-APRILTAG_BASE_Z = 0.024      # Tag中心Z坐标 (米)
-
-# 🏷️ AprilTag姿态（用于计算夹爪的正确姿态）
-APRILTAG_BASE_ROLL = -180 * PI / 180   # Tag的Roll (弧度) ⚠️ 这是Tag本身的姿态！
-APRILTAG_BASE_PITCH = 3.4 * PI / 180     # Tag的Pitch (弧度)
-APRILTAG_BASE_YAW = 150 * PI / 180     # Tag的Yaw (弧度)
-
-APRILTAG_REFERENCE_POSE_BASE = None  # 面板在基座系的目标姿态（3x3旋转矩阵，从上述RPY计算得到）
-APRILTAG_ALIGNMENT_TOLERANCE = 5.0 * PI / 180  # 姿态容差：5度
 # === 标准起始/结束位姿 (可选，用于视觉检测等待位置) ===
 # HOME位姿：一个安全的观察位姿，机械臂在此位置等待视觉检测
-# 注意：J5限位为[-70°, 70°]，保留5°安全余量
 HOME_JOINTS = [
     -4.68 * PI / 180,   # J1: -4.68°
     86.06 * PI / 180,   # J2: 86.06°
     -86.16 * PI / 180,  # J3: -86.16°
     5.27 * PI / 180,    # J4: 5.27°
-    65.0 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
+    69.12 * PI / 180,   # J5: 69.12°
     0.94 * PI / 180     # J6: 0.94°
 ]
-# HOME_JOINTS = [
-#     0 * PI / 180,   # J1: -4.68°
-#     0 * PI / 180,   # J2: 86.06°
-#     0 * PI / 180,  # J3: -86.16°
-#     0 * PI / 180,   # J4: 5.27°
-#     0 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
-#     0 * PI / 180     # J6: 0.94°
-# ]
 HOME_GRIPPER = 0  # 夹爪闭合状态（0 = 完全闭合）
 
 # 🔧 HOME位姿开关（控制动作开始前是否先到HOME位姿）
@@ -134,26 +91,26 @@ HOME_GRIPPER = 0  # 夹爪闭合状态（0 = 完全闭合）
 USE_HOME_POSITION = True
 
 # === 目标位姿配置 (基座坐标系) ===
-# 🎯 重要说明：
-#    TARGET_X/Y/Z 是实际按钮/旋钮的位置（不是AprilTag的位置！）
-#    姿态由 APRILTAG_BASE_ROLL/PITCH/YAW 自动计算（通过get_gripper_approach_rotation）
-#
-# 位置 (单位：米) - 实际按钮/旋钮的3D坐标
+# 位置 (单位：米)
 TARGET_X = 0.40  # X坐标 (降低以保证可达性)
-TARGET_Y = 0.20  # Y坐标
-TARGET_Z = 0.13  # Z坐标 (使用末端朝下姿态可达更高位置)
+TARGET_Y = 0  # Y坐标
+TARGET_Z = 0.20  # Z坐标 (使用末端朝下姿态可达更高位置)
 
 # 新增：完整位姿矩阵（包含法向量对齐）
 # 当 vision_button_action_ros2 提供时，将使用此矩阵代替 TARGET_X/Y/Z + TARGET_ROLL/PITCH/YAW
 TARGET_POSE_MATRIX = None  # 4x4 np.ndarray 或 None
 
-# 新增：面板对齐位姿（保存在对齐阶段计算的姿态）
-PANEL_ALIGN_POSE = None  # 4x4 np.ndarray 或 None，供后续按钮操作继承
+# 法向量姿态配置：通过视觉输入的法向量对齐末端执行器
+USE_SURFACE_NORMAL_ALIGNMENT = True   # True=使用法向量定义姿态, False=回退到Roll/Pitch/Yaw
+TARGET_SURFACE_NORMAL = np.array([0.0, 0.0, 1.0])  # 外部提供的法向量 (指向表面外侧)
+REFERENCE_AXIS_HINT = np.array([0.0, 0.0, 1.0])    # 参考方向，用于确定末端X轴/防止奇异
+GRIPPER_Z_FACES_OPPOSITE_NORMAL = True             # True=末端+Z朝向法向量反方向 (贴合表面)
+# 提示: 当 USE_SURFACE_NORMAL_ALIGNMENT=True 时，下方的 Roll/Pitch/Yaw 将被忽略
 
-# 姿态 (单位：弧度) - 仅在未设置AprilTag姿态时使用（回退方案）
-# ⚠️ 注意：当APRILTAG_REFERENCE_POSE_BASE存在时，姿态由AprilTag自动计算，这些值不会被使用
+# 姿态 (单位：弧度) - 相对于默认姿态（末端朝前）的旋转
+# 注意：Roll=Pitch=Yaw=0 表示默认姿态（末端朝前），这是一个可达的姿态
 TARGET_ROLL = 0.0          # 绕末端X轴旋转 (翻滚) - 正值：向右倾斜 [建议范围: -0.5~0.5 rad]
-TARGET_PITCH = PI/2        # 绕末端Y轴旋转 (俯仰) - 正值：向上抬起 [PI/2 rad = 90° = 末端朝下]
+TARGET_PITCH = PI / 2      # 绕末端Y轴旋转 (俯仰) - 正值：向上抬起 [PI/2 rad = 90° = 末端朝下]
 TARGET_YAW = 0.0           # 绕末端Z轴旋转 (偏航) - 正值：逆时针旋转 [建议范围: -1.0~1.0 rad]
 
 # 姿态模式选择
@@ -175,7 +132,6 @@ TEST_MODE_FROM_HOME = False  # True=从HOME位姿直接沿Z轴执行, False=使�
 # === 精调与调试开关 === 
 ENABLE_CARTESIAN_FINE_TUNE = False    # True=MoveIt后允许笛卡尔微调, False=严格使用MoveIt结果
 CARTESIAN_FINE_TUNE_THRESHOLD = 0.008  # 超过该距离(米)才触发微调
-CARTESIAN_ORIENTATION_INTERPOLATION = True  # ✨ True=笛卡尔精调时同时插值姿态(SLERP)，避免突然旋转
 DEBUG_IK_SOLVER = False               # True=打印每个IK求解细节
 AUTO_FINE_TUNE_ON_FAILURE = True      # True=MoveIt多次尝试后仍超差时自动触发笛卡尔精调
 AUTO_FINE_TUNE_SPEED = 12             # 自动精调的默认SDK速度
@@ -1325,17 +1281,8 @@ def move_to_pose_with_retries(target_pose, joints_target, speed=NORMAL_SPEED, gr
         actual_joints = get_current_joints()
         actual_pose = piper_arm.forward_kinematics(actual_joints)
         actual_xyz = actual_pose[:3, 3]
-        actual_R = actual_pose[:3, :3]
-        target_R = target_pose[:3, :3]
-        
         last_error = np.linalg.norm(actual_xyz - target_xyz)
         print(f"  [{description}] 实际到达: XYZ=({actual_xyz[0]:.3f}, {actual_xyz[1]:.3f}, {actual_xyz[2]:.3f}), 误差={last_error*100:.2f}cm")
-        
-        # 调试：打印姿态信息
-        actual_rpy = rotation_matrix_to_euler(actual_R)
-        target_rpy = rotation_matrix_to_euler(target_R)
-        print(f"  [{description}] 实际姿态: Roll={actual_rpy[0]*180/PI:6.1f}°, Pitch={actual_rpy[1]*180/PI:6.1f}°, Yaw={actual_rpy[2]*180/PI:6.1f}°")
-        print(f"  [{description}] 目标姿态: Roll={target_rpy[0]*180/PI:6.1f}°, Pitch={target_rpy[1]*180/PI:6.1f}°, Yaw={target_rpy[2]*180/PI:6.1f}°")
 
         if not moveit_enabled or last_error <= MOVEIT_POSITION_TOLERANCE:
             return True, last_error
@@ -1384,218 +1331,6 @@ def get_current_joints():
     ]
 
 
-def set_apriltag_reference_from_gripper_rpy(gripper_rpy_rad, current_joints):
-    """
-    从AprilTag在夹爪系的RPY计算面板在基座系的绝对姿态（先验知识）
-    
-    关键：计算后就不再依赖AprilTag实时检测
-    
-    Args:
-        gripper_rpy_rad: AprilTag在夹爪系的RPY（弧度）[roll, pitch, yaw]
-        current_joints: 当前关节角度（用于正向运动学）
-    
-    Returns:
-        bool: 是否成功设置
-    """
-    global APRILTAG_REFERENCE_POSE_BASE
-    
-    # 1. 获取当前夹爪在基座系的位姿
-    T_base_gripper = piper_arm.forward_kinematics(current_joints)
-    
-    # 2. 构建AprilTag相对夹爪的旋转矩阵
-    roll, pitch, yaw = gripper_rpy_rad
-    R_gripper_tag = euler_to_rotation_matrix(roll, pitch, yaw)
-    
-    # 3. 计算面板在基座系的姿态（关键步骤！）
-    # 面板姿态 = 夹爪姿态 @ AprilTag偏差
-    R_base_gripper = T_base_gripper[:3, :3]
-    R_base_panel = R_base_gripper @ R_gripper_tag
-    
-    # 4. 保存参考姿态（只保存旋转矩阵）
-    APRILTAG_REFERENCE_POSE_BASE = R_base_panel.copy()
-    
-    roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
-    print("\n" + "="*70)
-    print("✓✓✓ 已记录面板参考姿态（基座系绝对姿态）")
-    print("="*70)
-    print(f"  AprilTag偏差（夹爪系）: R={roll_deg:.2f}°, P={pitch_deg:.2f}°, Y={yaw_deg:.2f}°")
-    print(f"  面板姿态已固化为基座系绝对姿态")
-    print(f"  后续运动将保持此姿态，无需AprilTag实时检测")
-    print("="*70)
-    
-    return True
-
-
-def set_apriltag_reference_from_base_rpy(base_rpy_rad):
-    """
-    直接从AprilTag在基座系的RPY设置面板参考姿态（新版本）
-    
-    优势：无需坐标转换，直接使用检测节点发布的基座系姿态
-    
-    Args:
-        base_rpy_rad: AprilTag在基座系的RPY（弧度）[roll, pitch, yaw]
-    
-    Returns:
-        bool: 是否成功设置
-    """
-    global APRILTAG_REFERENCE_POSE_BASE
-    
-    # 直接构建面板在基座系的旋转矩阵
-    roll, pitch, yaw = base_rpy_rad
-    R_base_panel = euler_to_rotation_matrix(roll, pitch, yaw)
-    
-    # 保存参考姿态
-    APRILTAG_REFERENCE_POSE_BASE = R_base_panel.copy()
-    
-    roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
-    print("\n" + "="*70)
-    print("✓✓✓ 已记录面板参考姿态（基座系绝对姿态）")
-    print("="*70)
-    print(f"  AprilTag姿态（基座系）: R={roll_deg:.2f}°, P={pitch_deg:.2f}°, Y={yaw_deg:.2f}°")
-    print(f"  面板姿态已固化为基座系绝对姿态")
-    print(f"  后续运动将保持此姿态，无需AprilTag实时检测")
-    print("="*70)
-    
-    return True
-
-
-def rotation_matrix_to_quaternion(R):
-    """
-    将旋转矩阵转换为四元数 [x, y, z, w]
-    """
-    trace = np.trace(R)
-    
-    if trace > 0:
-        s = 0.5 / np.sqrt(trace + 1.0)
-        w = 0.25 / s
-        x = (R[2, 1] - R[1, 2]) * s
-        y = (R[0, 2] - R[2, 0]) * s
-        z = (R[1, 0] - R[0, 1]) * s
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-        w = (R[2, 1] - R[1, 2]) / s
-        x = 0.25 * s
-        y = (R[0, 1] + R[1, 0]) / s
-        z = (R[0, 2] + R[2, 0]) / s
-    elif R[1, 1] > R[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-        w = (R[0, 2] - R[2, 0]) / s
-        x = (R[0, 1] + R[1, 0]) / s
-        y = 0.25 * s
-        z = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-        w = (R[1, 0] - R[0, 1]) / s
-        x = (R[0, 2] + R[2, 0]) / s
-        y = (R[1, 2] + R[2, 1]) / s
-        z = 0.25 * s
-    
-    return np.array([x, y, z, w])
-
-
-def create_aligned_target_pose(button_xyz_base, gripper_rotation=None):
-    """
-    根据按钮位置和夹爪目标姿态构建目标位姿
-    
-    ⚠️ 重要修正：
-    - gripper_rotation 是夹爪的**目标姿态**（绝对姿态），不是补偿矩阵！
-    - 应该从 get_gripper_approach_rotation() 获取，该函数已考虑Tag姿态的转换关系
-    
-    Args:
-        button_xyz_base: 按钮在基座系的坐标 [x, y, z]
-        gripper_rotation: 夹爪的目标姿态 (3x3旋转矩阵)
-            - None: 使用默认姿态（末端朝下）
-            - 推荐使用 get_gripper_approach_rotation() 获取正确的姿态
-    
-    Returns:
-        4x4 变换矩阵
-    
-    使用示例:
-        # 垂直按压（推荐）
-        R_gripper = get_gripper_approach_rotation('perpendicular')
-        T = create_aligned_target_pose([x, y, z], R_gripper)
-        
-        # 平行于面板
-        R_gripper = get_gripper_approach_rotation('parallel')
-        T = create_aligned_target_pose([x, y, z], R_gripper)
-    """
-    if gripper_rotation is None:
-        print("⚠️  未指定夹爪姿态，使用默认姿态（末端朝下）")
-        R_target = euler_to_rotation_matrix(0.0, PI/2, 0.0)
-    else:
-        R_target = gripper_rotation
-    
-    # 构建目标位姿
-    T_target = np.eye(4)
-    T_target[:3, :3] = R_target
-    T_target[:3, 3] = button_xyz_base
-    
-    return T_target
-
-
-def get_gripper_approach_rotation(approach_mode='perpendicular'):
-    """
-    获取夹爪接近面板的目标姿态（不是补偿矩阵！）
-    
-    ⚠️ 关键理解：
-    - AprilTag的姿态（APRILTAG_BASE_ROLL/PITCH/YAW）是Tag本身的姿态
-    - 夹爪要垂直按压时，需要的姿态与Tag姿态的关系是：
-        * gripper_roll  = -APRILTAG_BASE_ROLL  (Roll相反，因为法向量反向)
-        * gripper_pitch =  APRILTAG_BASE_PITCH (Pitch相同)
-        * gripper_yaw   =  APRILTAG_BASE_YAW   (Yaw相同)
-    
-    Args:
-        approach_mode: 接近模式
-            - 'perpendicular': 垂直于面板（默认，按压姿态）
-            - 'parallel': 平行于面板（贴合姿态）
-            - 'tilted_15': 倾斜15°（按压前的预备姿态）
-            - 'tilted_30': 倾斜30°（按压前的预备姿态）
-    
-    Returns:
-        3x3 旋转矩阵，表示夹爪的目标姿态（绝对姿态，不是相对补偿）
-    
-    使用示例:
-        # 垂直按压
-        R_gripper = get_gripper_approach_rotation('perpendicular')
-        T = create_aligned_target_pose([x, y, z], R_gripper)
-    """
-    if APRILTAG_REFERENCE_POSE_BASE is None:
-        print("⚠️  未设置AprilTag参考姿态，使用默认夹爪姿态")
-        if approach_mode == 'perpendicular':
-            return euler_to_rotation_matrix(0.0, PI/2, 0.0)  # 末端朝前
-        else:
-            return euler_to_rotation_matrix(0.0, 0.0, 0.0)   # 末端朝下
-    
-    if approach_mode == 'perpendicular':
-        # 🎯 垂直按压：Roll取反，Pitch和Yaw保持
-        gripper_roll  = -APRILTAG_BASE_ROLL
-        gripper_pitch =  APRILTAG_BASE_PITCH
-        gripper_yaw   =  APRILTAG_BASE_YAW
-        return euler_to_rotation_matrix(gripper_roll, gripper_pitch, gripper_yaw)
-    
-    elif approach_mode == 'parallel':
-        # 平行于面板：直接使用Tag姿态
-        return APRILTAG_REFERENCE_POSE_BASE.copy()
-    
-    elif approach_mode == 'tilted_15':
-        # 倾斜15°：在垂直姿态基础上，绕Y轴额外旋转-15°
-        gripper_roll  = -APRILTAG_BASE_ROLL
-        gripper_pitch =  APRILTAG_BASE_PITCH - 15 * PI / 180
-        gripper_yaw   =  APRILTAG_BASE_YAW
-        return euler_to_rotation_matrix(gripper_roll, gripper_pitch, gripper_yaw)
-    
-    elif approach_mode == 'tilted_30':
-        # 倾斜30°：在垂直姿态基础上，绕Y轴额外旋转-30°
-        gripper_roll  = -APRILTAG_BASE_ROLL
-        gripper_pitch =  APRILTAG_BASE_PITCH - 30 * PI / 180
-        gripper_yaw   =  APRILTAG_BASE_YAW
-        return euler_to_rotation_matrix(gripper_roll, gripper_pitch, gripper_yaw)
-    
-    else:
-        print(f"⚠️  未知的接近模式: {approach_mode}，使用默认（垂直）")
-        return get_gripper_approach_rotation('perpendicular')
-
-
 def euler_to_rotation_matrix(roll, pitch, yaw):
     """
     欧拉角转旋转矩阵 (ZYX顺序)
@@ -1633,122 +1368,111 @@ def euler_to_rotation_matrix(roll, pitch, yaw):
     return Rz @ Ry @ Rx
 
 
-def rotation_matrix_to_euler(R):
-    """
-    旋转矩阵转欧拉角 (ZYX顺序)
-    
-    参数:
-        R: 3x3 旋转矩阵
-    
-    返回:
-        (roll, pitch, yaw) 元组 (弧度)
-    """
-    # 提取pitch
-    sy = np.sqrt(R[0,0]**2 + R[1,0]**2)
-    
-    singular = sy < 1e-6
-    
-    if not singular:
-        roll = np.arctan2(R[2,1], R[2,2])
-        pitch = np.arctan2(-R[2,0], sy)
-        yaw = np.arctan2(R[1,0], R[0,0])
-    else:
-        roll = np.arctan2(-R[1,2], R[1,1])
-        pitch = np.arctan2(-R[2,0], sy)
-        yaw = 0
-    
-    return roll, pitch, yaw
+def build_rotation_from_normal(normal_vector, reference_axis=None, invert_z=True):
+    """根据法向量生成旋转矩阵，让末端Z轴与法向量对齐"""
+    if normal_vector is None:
+        return None
+
+    normal = np.array(normal_vector, dtype=float).flatten()
+    if normal.size < 3:
+        return None
+    normal = normal[:3]
+    norm = np.linalg.norm(normal)
+    if norm < 1e-6:
+        return None
+
+    z_axis = -normal if invert_z else normal
+    z_norm = np.linalg.norm(z_axis)
+    if z_norm < 1e-9:
+        return None
+    z_axis = z_axis / z_norm
+
+    if reference_axis is None:
+        reference_axis = np.array([0.0, 0.0, 1.0])
+    ref = np.array(reference_axis, dtype=float).flatten()
+    if ref.size < 3:
+        ref = np.array([0.0, 1.0, 0.0])
+    ref = ref[:3]
+    if np.linalg.norm(ref) < 1e-6:
+        ref = np.array([0.0, 1.0, 0.0])
+    ref = ref / np.linalg.norm(ref)
+
+    if abs(np.dot(ref, z_axis)) > 0.999:
+        candidates = [
+            np.array([0.0, 1.0, 0.0]),
+            np.array([1.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0])
+        ]
+        for cand in candidates:
+            cand_norm = np.linalg.norm(cand)
+            if cand_norm < 1e-6:
+                continue
+            cand_unit = cand / cand_norm
+            if abs(np.dot(cand_unit, z_axis)) < 0.999:
+                ref = cand_unit
+                break
+
+    x_axis = np.cross(ref, z_axis)
+    x_norm = np.linalg.norm(x_axis)
+    if x_norm < 1e-6:
+        return None
+    x_axis = x_axis / x_norm
+
+    y_axis = np.cross(z_axis, x_axis)
+    y_norm = np.linalg.norm(y_axis)
+    if y_norm < 1e-6:
+        return None
+    y_axis = y_axis / y_norm
+
+    return np.column_stack((x_axis, y_axis, z_axis))
 
 
-def slerp_rotation(R0, R1, t):
-    """
-    球面线性插值（SLERP）用于旋转矩阵
-    
-    参数:
-        R0: 起始旋转矩阵 (3x3)
-        R1: 目标旋转矩阵 (3x3)
-        t: 插值参数 [0, 1]，0=R0, 1=R1
-    
-    返回:
-        插值后的旋转矩阵 (3x3)
-    
-    说明:
-        使用四元数进行球面线性插值，保证旋转路径最短且速度均匀
-    """
-    try:
-        from scipy.spatial.transform import Rotation as R_scipy
-        
-        # 转换为四元数
-        q0 = R_scipy.from_matrix(R0).as_quat()  # [x, y, z, w]
-        q1 = R_scipy.from_matrix(R1).as_quat()
-        
-        # 确保选择最短路径（四元数的符号模糊性）
-        if np.dot(q0, q1) < 0:
-            q1 = -q1
-        
-        # 球面线性插值
-        q_interp = (1 - t) * q0 + t * q1
-        q_interp = q_interp / np.linalg.norm(q_interp)  # 归一化
-        
-        # 转回旋转矩阵
-        R_interp = R_scipy.from_quat(q_interp).as_matrix()
-        
-        return R_interp
-    
-    except ImportError:
-        # 备用方案：使用矩阵指数映射（Log-Exp SLERP）
-        # R(t) = R0 * exp(t * log(R0^T * R1))
-        R_delta = R0.T @ R1  # 相对旋转
-        
-        # 转换为轴角表示（Rodrigues公式的逆）
-        theta = np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1, 1))
-        
-        if theta < 1e-6:
-            # 接近单位矩阵，直接线性插值
-            return (1 - t) * R0 + t * R1
-        
-        # 提取旋转轴
-        omega_skew = (R_delta - R_delta.T) / (2 * np.sin(theta))
-        omega = np.array([omega_skew[2,1], omega_skew[0,2], omega_skew[1,0]])
-        
-        # 缩放角度
-        theta_t = theta * t
-        
-        # Rodrigues公式：exp(theta * [omega]_x)
-        omega_skew_t = np.array([
-            [0, -omega[2], omega[1]],
-            [omega[2], 0, -omega[0]],
-            [-omega[1], omega[0], 0]
-        ]) * theta_t
-        
-        R_delta_t = (np.eye(3) + 
-                     np.sin(theta_t) / theta_t * omega_skew_t + 
-                     (1 - np.cos(theta_t)) / (theta_t**2) * (omega_skew_t @ omega_skew_t))
-        
-        return R0 @ R_delta_t
-
-
-def create_target_transform(x, y, z, roll=0.0, pitch=0.0, yaw=0.0, use_6d=False):
+def create_target_transform(
+    x,
+    y,
+    z,
+    roll=0.0,
+    pitch=0.0,
+    yaw=0.0,
+    use_6d=False,
+    normal_vector=None,
+    align_with_normal=False,
+    reference_axis=None,
+    invert_normal=True
+):
     """
     创建目标位姿变换矩阵
     
     参数:
         x, y, z: 位置 (米)
         roll, pitch, yaw: 姿态 (弧度) - 相对于默认姿态的旋转
-        use_6d: 是否使用6D位姿
+        use_6d: 是否使用6D位姿（欧拉角模式）
+        normal_vector: 外部提供的法向量 (3,) 序列
+        align_with_normal: True则根据法向量生成姿态
+        reference_axis: 参考方向（防止法向量与参考平行导致奇异），默认Z轴
+        invert_normal: True=末端+Z指向法向量反方向
     
     返回:
         4x4 齐次变换矩阵
     
     说明:
-        - 当 use_6d=False 时: 使用默认姿态（末端朝前）
-        - 当 use_6d=True 时:
+    - 优先根据法向量生成姿态（align_with_normal=True）
+    - 当 use_6d=False 时: 使用默认姿态（末端朝前）
+    - 当 use_6d=True 时:
           - Roll=Pitch=Yaw=0 表示默认姿态（末端朝前）
           - Roll/Pitch/Yaw 是在默认姿态基础上的相对旋转（末端坐标系）
     """
     T = np.eye(4)
     
-    if use_6d:
+    if align_with_normal and normal_vector is not None:
+        R_normal = build_rotation_from_normal(normal_vector, reference_axis, invert_normal)
+        if R_normal is not None:
+            T[:3, :3] = R_normal
+        else:
+            print("  ⚠️ 提供的法向量无效，回退到默认姿态")
+            align_with_normal = False
+
+    if not align_with_normal and use_6d:
         # 默认姿态（末端朝前）
         R_default = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]])
         
@@ -1757,7 +1481,7 @@ def create_target_transform(x, y, z, roll=0.0, pitch=0.0, yaw=0.0, use_6d=False)
         
         # 最终姿态 = 默认姿态 × 相对旋转
         T[:3, :3] = R_default @ R_relative
-    else:
+    elif not align_with_normal:
         # 默认姿态：末端朝前
         T[:3, :3] = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]])
     
@@ -2005,40 +1729,13 @@ def precise_move_to_pose(target_pose, speed=15, description="笛卡尔精调", m
 
     num_waypoints = max(30, int(distance * 200))
     waypoint_poses = []
-    
-    # 提取当前和目标的旋转矩阵
-    current_R = current_T[:3, :3]
-    target_R = target_pose[:3, :3]
-    
-    # 计算姿态差异（用于判断是否需要插值）
-    rotation_diff = np.linalg.norm(current_R - target_R)
-    
-    # 调试：打印当前和目标姿态
-    current_rpy = rotation_matrix_to_euler(current_R)
-    target_rpy = rotation_matrix_to_euler(target_R)
-    print(f"  [{description}] 当前姿态: Roll={current_rpy[0]*180/PI:6.1f}°, Pitch={current_rpy[1]*180/PI:6.1f}°, Yaw={current_rpy[2]*180/PI:6.1f}°")
-    print(f"  [{description}] 目标姿态: Roll={target_rpy[0]*180/PI:6.1f}°, Pitch={target_rpy[1]*180/PI:6.1f}°, Yaw={target_rpy[2]*180/PI:6.1f}°")
-    print(f"  [{description}] 姿态差异: {rotation_diff:.4f}")
-    
     for i in range(1, num_waypoints + 1):
         alpha = i / num_waypoints
-        intermediate_T = np.eye(4)
-        
-        # 位置插值（线性）
+        intermediate_T = target_pose.copy()
         intermediate_T[:3, 3] = current_xyz + alpha * (target_xyz - current_xyz)
-        
-        # 姿态插值（根据配置决定）
-        if CARTESIAN_ORIENTATION_INTERPOLATION and rotation_diff > 0.01:
-            # 使用球面线性插值（SLERP），保证平滑旋转
-            intermediate_T[:3, :3] = slerp_rotation(current_R, target_R, alpha)
-        else:
-            # 直接使用目标姿态（旧行为）
-            intermediate_T[:3, :3] = target_R
-        
         waypoint_poses.append(intermediate_T)
 
-    interp_mode = "位置+姿态同步插值" if (CARTESIAN_ORIENTATION_INTERPOLATION and rotation_diff > 0.01) else "仅位置插值"
-    print(f"  [{description}] 生成 {len(waypoint_poses)} 个waypoints（{interp_mode}）")
+    print(f"  [{description}] 生成 {len(waypoint_poses)} 个waypoints")
     cartesian_traj, fraction = compute_custom_cartesian_path(
         current_joints,
         waypoint_poses,
@@ -2068,23 +1765,22 @@ def precise_move_to_pose(target_pose, speed=15, description="笛卡尔精调", m
 
 def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientation=True, speed_limit=None, profile=None):
     """
-    沿末端执行器Z轴方向移动，保持当前姿态不变
+    沿末端执行器z轴方向移动（保持当前姿态或理想姿态）
     使用自定义笛卡尔路径规划以提高可靠性
     
     参数:
         current_joints: 当前关节角度 (弧度)
         distance: 移动距离 (米)，正值=沿末端+Z轴方向，负值=沿末端-Z轴方向
         speed: 移动速度
-        lock_orientation: True=锁定姿态（保持当前姿态不变），False=允许姿态变化
+        lock_orientation: True=使用理想姿态方向（补偿IK误差），False=使用实际姿态方向
     
     返回:
         新的关节角度
     
     说明:
-        - 末端坐标系Z轴 = 旋转矩阵第3列
-        - 沿当前末端Z轴方向移动，正值=+Z方向（向前），负值=-Z方向（后退）
-        - lock_orientation=True时，移动过程中保持姿态不变（推荐用于按压）
-        - ✅ 不会强制修改姿态，只是沿当前姿态的Z轴方向移动
+        末端坐标系Z轴 = 旋转矩阵第3列
+        直接沿末端Z轴方向移动，正值=+Z方向，负值=-Z方向
+        当lock_orientation=True时，使用目标姿态的Z轴方向，避免IK误差导致的方向偏移
     """
     global piper_arm, move_group, piper
     
@@ -2099,16 +1795,24 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
     print(f"    [{current_T[2,0]:7.4f}, {current_T[2,1]:7.4f}, {current_T[2,2]:7.4f}]")
     
     # 决定使用哪个Z轴方向
+    ideal_T = None
     if lock_orientation:
-        # ✅ 直接使用当前姿态的Z轴方向
-        # 因为当前姿态已经是通过MoveIt/笛卡尔精调得到的正确姿态
-        # 不需要重新构建"理想姿态"
-        z_axis = current_T[:3, 2]
-        print(f"  ✓ 使用当前姿态的Z轴方向（姿态锁定模式）")
+        # 使用理想姿态的Z轴方向（从目标姿态配置获取）
+        ideal_T = create_target_transform(
+            TARGET_X, TARGET_Y, TARGET_Z,
+            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+            USE_6D_POSE,
+            TARGET_SURFACE_NORMAL,
+            USE_SURFACE_NORMAL_ALIGNMENT,
+            REFERENCE_AXIS_HINT,
+            GRIPPER_Z_FACES_OPPOSITE_NORMAL
+        )
+        z_axis = ideal_T[:3, 2]  # 理想Z轴方向
+        print(f"  ✓ 使用姿态锁定模式（理想Z轴方向）")
     else:
-        # 使用当前实际姿态的Z轴方向（同上，但逻辑不同）
+        # 使用当前实际姿态的Z轴方向
         z_axis = current_T[:3, 2]
-        print(f"  使用当前姿态的Z轴方向")
+        print(f"  使用实际姿态方向")
     
     print(f"  移动距离: {distance*100:.1f}cm")
     print(f"  末端Z轴方向 (基坐标系): ({z_axis[0]:7.4f}, {z_axis[1]:7.4f}, {z_axis[2]:7.4f})")
@@ -2121,9 +1825,19 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
         print(f"  实际姿态方向: ({actual_z[0]:7.4f}, {actual_z[1]:7.4f}, {actual_z[2]:7.4f})")
         print(f"  姿态偏差角度: {angle_error:.2f}° (已补偿)")
     else:
-        ideal_z = np.array([1.0, 0.0, 0.0])  # 末端朝前的理想方向
+        if ideal_T is None:
+            ideal_T = create_target_transform(
+                TARGET_X, TARGET_Y, TARGET_Z,
+                TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+                USE_6D_POSE,
+                TARGET_SURFACE_NORMAL,
+                USE_SURFACE_NORMAL_ALIGNMENT,
+                REFERENCE_AXIS_HINT,
+                GRIPPER_Z_FACES_OPPOSITE_NORMAL
+            )
+        ideal_z = ideal_T[:3, 2]
         angle_error = np.arccos(np.clip(np.dot(z_axis, ideal_z), -1.0, 1.0)) * 180.0 / PI
-        print(f"  理想Z轴方向 (末端朝前): ( 1.0000,  0.0000,  0.0000)")
+        print(f"  理想Z轴方向: ({ideal_z[0]:7.4f}, {ideal_z[1]:7.4f}, {ideal_z[2]:7.4f})")
         print(f"  姿态偏差角度: {angle_error:.2f}° (未补偿)")
     
     # 计算新的目标位置：沿末端Z轴方向移动distance米
@@ -2133,12 +1847,20 @@ def move_along_end_effector_z(current_joints, distance, speed=20, lock_orientati
     target_T[:3, 3] += z_axis * distance
 
     
-    # 如果启用姿态锁定，保持当前姿态不变（不重新构建）
+    # 如果启用姿态锁定，保持理想姿态
     if lock_orientation:
-        # ✅ 使用当前实际姿态，不要重新计算！
-        # 这样可以保持从MoveIt/笛卡尔精调得到的正确姿态
-        target_T[:3, :3] = current_T[:3, :3]
-        print(f"  ✓ 保持当前姿态不变（沿末端Z轴移动）")
+        if ideal_T is None:
+            ideal_T = create_target_transform(
+                TARGET_X, TARGET_Y, TARGET_Z,
+                TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+                USE_6D_POSE,
+                TARGET_SURFACE_NORMAL,
+                USE_SURFACE_NORMAL_ALIGNMENT,
+                REFERENCE_AXIS_HINT,
+                GRIPPER_Z_FACES_OPPOSITE_NORMAL
+            )
+        target_T[:3, :3] = ideal_T[:3, :3]  # 使用理想姿态
+        print(f"  ✓ 保持理想姿态不变")
     
     print(f"  目标位置: ({target_T[0,3]:.3f}, {target_T[1,3]:.3f}, {target_T[2,3]:.3f})")
     
@@ -2479,36 +2201,15 @@ def action_plugin():
     
     # 步骤2: 移动到目标位置
     print("\n步骤2: 移动到目标位置...")
-    
-    # 🔧 新增：优先使用 AprilTag 参考姿态（包含法向量对齐）
-    if APRILTAG_REFERENCE_POSE_BASE is not None:
-        print("  ✓ 使用AprilTag参考姿态计算的目标位姿")
-        # 注意：使用TARGET位置（按钮实际位置），AprilTag只提供姿态参考
-        target_position = np.array([TARGET_X, TARGET_Y, TARGET_Z])
-        
-        # 🎯 关键：使用垂直接近模式（推荐用于插拔动作）
-        R_gripper = get_gripper_approach_rotation('perpendicular')
-        targetT = create_aligned_target_pose(target_position, R_gripper)
-        
-        target_xyz = targetT[:3, 3]
-        target_R = targetT[:3, :3]
-        target_rpy = rotation_matrix_to_euler(target_R)
-        
-        print(f"  接近位置: ({target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f})")
-        print(f"  目标姿态: Roll={target_rpy[0]*180/PI:6.1f}°, Pitch={target_rpy[1]*180/PI:6.1f}°, Yaw={target_rpy[2]*180/PI:6.1f}°")
-        print(f"  末端Z轴: ({targetT[0,2]:.3f}, {targetT[1,2]:.3f}, {targetT[2,2]:.3f})")
-        print(f"  姿态模式: 垂直于面板 (perpendicular) ✓")
-    else:
-        print("  ⚠️  未设置AprilTag参考姿态，使用默认姿态")
-        targetT = create_target_transform(
-            TARGET_X, TARGET_Y, TARGET_Z,
-            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
-            USE_6D_POSE
-        )
-        target_xyz = targetT[:3, 3]
-        print(f"  目标位姿: ({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f})")
-    
-    print(f"  插入深度: {PLUGIN_INSERT_DEPTH*100:.1f}cm")
+    targetT = create_target_transform(
+        TARGET_X, TARGET_Y, TARGET_Z,
+        TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+        USE_6D_POSE,
+        TARGET_SURFACE_NORMAL,
+        USE_SURFACE_NORMAL_ALIGNMENT,
+        REFERENCE_AXIS_HINT,
+        GRIPPER_Z_FACES_OPPOSITE_NORMAL
+    )
 
     joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
@@ -2536,7 +2237,6 @@ def action_plugin():
     # 步骤3: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是IK计算的理论值
     print(f"\n步骤3: 沿末端z轴插入 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-    
     actual_joints_step3 = get_current_joints()  # 获取实际当前位置
     actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
     actual_xyz_step3 = actual_T_step3[:3, 3]
@@ -2555,7 +2255,6 @@ def action_plugin():
     # 步骤5: 沿末端z轴拔出
     # 【关键修复】使用实际当前位置
     print(f"\n步骤5: 沿末端z轴拔出 {PLUGIN_INSERT_DEPTH*100:.1f}cm...")
-    
     actual_joints_step5 = get_current_joints()  # 获取插入后的实际位置
     actual_T_step5 = piper_arm.forward_kinematics(actual_joints_step5)
     actual_xyz_step5 = actual_T_step5[:3, 3]
@@ -2643,36 +2342,15 @@ def action_toggle():
     
     # 步骤2: 移动到目标位置
     print("\n步骤2: 移动到目标位置...")
-    
-    # 🔧 新增：优先使用 AprilTag 参考姿态（包含法向量对齐）
-    if APRILTAG_REFERENCE_POSE_BASE is not None:
-        print("  ✓ 使用AprilTag参考姿态计算的目标位姿")
-        # 注意：使用TARGET位置（按钮实际位置），AprilTag只提供姿态参考
-        target_position = np.array([TARGET_X, TARGET_Y, TARGET_Z])
-        
-        # 🎯 关键：使用垂直接近模式（推荐用于拨动动作）
-        R_gripper = get_gripper_approach_rotation('perpendicular')
-        targetT = create_aligned_target_pose(target_position, R_gripper)
-        
-        target_xyz = targetT[:3, 3]
-        target_R = targetT[:3, :3]
-        target_rpy = rotation_matrix_to_euler(target_R)
-        
-        print(f"  接近位置: ({target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f})")
-        print(f"  目标姿态: Roll={target_rpy[0]*180/PI:6.1f}°, Pitch={target_rpy[1]*180/PI:6.1f}°, Yaw={target_rpy[2]*180/PI:6.1f}°")
-        print(f"  末端Z轴: ({targetT[0,2]:.3f}, {targetT[1,2]:.3f}, {targetT[2,2]:.3f})")
-        print(f"  姿态模式: 垂直于面板 (perpendicular) ✓")
-    else:
-        print("  ⚠️  未设置AprilTag参考姿态，使用默认姿态")
-        targetT = create_target_transform(
-            TARGET_X, TARGET_Y, TARGET_Z,
-            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
-            USE_6D_POSE
-        )
-        target_xyz = targetT[:3, 3]
-        print(f"  目标位姿: ({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f})")
-    
-    print(f"  joint4旋转: {TOGGLE_JOINT4_ROTATE}°, 插入: {TOGGLE_INSERT_DEPTH*100:.1f}cm, 拨动: {TOGGLE_JOINT3_ANGLE}° ({TOGGLE_DIRECTION})")
+    targetT = create_target_transform(
+        TARGET_X, TARGET_Y, TARGET_Z,
+        TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+        USE_6D_POSE,
+        TARGET_SURFACE_NORMAL,
+        USE_SURFACE_NORMAL_ALIGNMENT,
+        REFERENCE_AXIS_HINT,
+        GRIPPER_Z_FACES_OPPOSITE_NORMAL
+    )
     
     joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
@@ -2707,9 +2385,7 @@ def action_toggle():
     
     # 步骤4: 沿末端z轴插入
     # 使用实际到达的关节角度，而不是上一步计算的理论值
-    # 步骤4: 沿末端z轴插入
     print(f"\n步骤4: 沿末端z轴插入 {TOGGLE_INSERT_DEPTH*100:.1f}cm...")
-    
     actual_joints_step4 = get_current_joints()  # 获取实际当前位置
     actual_T_step4 = piper_arm.forward_kinematics(actual_joints_step4)
     actual_xyz_step4 = actual_T_step4[:3, 3]
@@ -2774,16 +2450,8 @@ def action_toggle():
 
 def action_push():
     """
-    按压按钮操作（AprilTag绝对姿态版）
-    
-    工作流程：
-    1. 移动到HOME位姿（可选）
-    2. 检查是否已设置AprilTag参考姿态
-    3. 直接规划到按钮位置（使用绝对姿态，带5度容差约束）
-    4. 执行按压动作
-    5. 返回零位
-    
-    关键：姿态约束基于基座系，不依赖AprilTag实时检测
+    按压按钮操作
+    流程: HOME位姿 → 闭合 → 到达接近位姿 → 插入(z轴前进) → 保持0.5s → 返回 → 回HOME位姿
     """
     global piper_arm
     
@@ -2792,15 +2460,8 @@ def action_push():
     clear_ee_trail()
     
     print("="*70)
-    print("动作类型: Push (按压按钮) - AprilTag绝对姿态版")
+    print("动作类型: Push (按压按钮)")
     print("="*70)
-    
-    # 前置检查：是否已设置参考姿态
-    if APRILTAG_REFERENCE_POSE_BASE is None:
-        print("⚠️  未设置AprilTag参考姿态")
-        print("  将使用默认姿态（末端朝下）")
-    else:
-        print("✓ 已加载AprilTag参考姿态（基座系绝对姿态）")
     
     # 步骤0: 移动到HOME位姿
     if USE_HOME_POSITION:
@@ -2833,35 +2494,29 @@ def action_push():
         # 正常模式：MoveIt规划到目标位姿
         print("\n步骤2: MoveIt规划到目标位姿...")
         
-        # 🔧 新增：优先使用 AprilTag 参考姿态（包含法向量对齐）
-        if APRILTAG_REFERENCE_POSE_BASE is not None:
-            print("  ✓ 使用AprilTag参考姿态计算的目标位姿")
-            # 注意：使用TARGET位置（按钮实际位置），AprilTag只提供姿态参考
-            target_position = np.array([TARGET_X, TARGET_Y, TARGET_Z])
-            
-            # 🎯 关键：使用垂直接近模式（推荐用于按压动作）
-            R_offset = get_gripper_approach_rotation('perpendicular')
-            targetT = create_aligned_target_pose(target_position, R_offset)
-            
+        # 🔧 新增：优先使用 TARGET_POSE_MATRIX（包含法向量对齐）
+        if TARGET_POSE_MATRIX is not None:
+            print("  ✓ 使用面板法向量计算的目标位姿")
+            targetT = TARGET_POSE_MATRIX.copy()
             target_xyz = targetT[:3, 3]
-            target_R = targetT[:3, :3]
-            target_rpy = rotation_matrix_to_euler(target_R)
-            
             print(f"  接近位置: ({target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f})")
-            print(f"  目标姿态: Roll={target_rpy[0]*180/PI:6.1f}°, Pitch={target_rpy[1]*180/PI:6.1f}°, Yaw={target_rpy[2]*180/PI:6.1f}°")
             print(f"  末端Z轴: ({targetT[0,2]:.3f}, {targetT[1,2]:.3f}, {targetT[2,2]:.3f})")
-            print(f"  姿态模式: 垂直于面板 (perpendicular) ✓")
         else:
-            print("  ⚠️  未设置AprilTag参考姿态，使用默认姿态")
+            print("  ⚠️  无法向量，使用默认姿态")
             targetT = create_target_transform(
                 TARGET_X, TARGET_Y, TARGET_Z,
                 TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
-                USE_6D_POSE
+                USE_6D_POSE,
+                TARGET_SURFACE_NORMAL,
+                USE_SURFACE_NORMAL_ALIGNMENT,
+                REFERENCE_AXIS_HINT,
+                GRIPPER_Z_FACES_OPPOSITE_NORMAL
             )
             target_xyz = targetT[:3, 3]
             print(f"  目标位姿: ({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f})")
         
         print(f"  按压深度: {PUSH_INSERT_DEPTH*100:.1f}cm, 保持: {PUSH_HOLD_TIME}秒")
+        target_xyz = targetT[:3, 3]
 
         joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
         if not joints_target:
@@ -2904,8 +2559,8 @@ def action_push():
         print(f"\n步骤2 (测试模式): 沿末端Z轴按压 {total_distance*100:.1f}cm...")
     else:
         print(f"\n步骤3: 沿末端Z轴按压 {total_distance*100:.1f}cm...")
-        if APRILTAG_REFERENCE_POSE_BASE is not None:
-            print(f"  (Z轴已对齐AprilTag，垂直接近面板)")
+        if TARGET_POSE_MATRIX is not None:
+            print(f"  (Z轴已对齐法向量，垂直接近面板)")
         else:
             print(f"  (使用默认姿态)")
     
@@ -3024,36 +2679,15 @@ def action_knob():
     
     # 步骤2: 移动到目标位置
     print("\n步骤2: 移动到目标位置...")
-    
-    # 🔧 新增：优先使用 AprilTag 参考姿态（包含法向量对齐）
-    if APRILTAG_REFERENCE_POSE_BASE is not None:
-        print("  ✓ 使用AprilTag参考姿态计算的目标位姿")
-        # 注意：使用TARGET位置（旋钮实际位置），AprilTag只提供姿态参考
-        target_position = np.array([TARGET_X, TARGET_Y, TARGET_Z])
-        
-        # 🎯 关键：使用垂直接近模式（推荐用于旋钮插入动作）
-        R_gripper = get_gripper_approach_rotation('perpendicular')
-        targetT = create_aligned_target_pose(target_position, R_gripper)
-        
-        target_xyz = targetT[:3, 3]
-        target_R = targetT[:3, :3]
-        target_rpy = rotation_matrix_to_euler(target_R)
-        
-        print(f"  接近位置: ({target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f})")
-        print(f"  目标姿态: Roll={target_rpy[0]*180/PI:6.1f}°, Pitch={target_rpy[1]*180/PI:6.1f}°, Yaw={target_rpy[2]*180/PI:6.1f}°")
-        print(f"  末端Z轴: ({targetT[0,2]:.3f}, {targetT[1,2]:.3f}, {targetT[2,2]:.3f})")
-        print(f"  姿态模式: 垂直于面板 (perpendicular) ✓")
-    else:
-        print("  ⚠️  未设置AprilTag参考姿态，使用默认姿态")
-        targetT = create_target_transform(
-            TARGET_X, TARGET_Y, TARGET_Z,
-            TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
-            USE_6D_POSE
-        )
-        target_xyz = targetT[:3, 3]
-        print(f"  目标位姿: ({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f})")
-    
-    print(f"  插入深度: {KNOB_INSERT_DEPTH*100:.1f}cm, 旋转: {KNOB_ROTATION_ANGLE}° ({KNOB_ROTATION_DIRECTION})")
+    targetT = create_target_transform(
+        TARGET_X, TARGET_Y, TARGET_Z,
+        TARGET_ROLL, TARGET_PITCH, TARGET_YAW,
+        USE_6D_POSE,
+        TARGET_SURFACE_NORMAL,
+        USE_SURFACE_NORMAL_ALIGNMENT,
+        REFERENCE_AXIS_HINT,
+        GRIPPER_Z_FACES_OPPOSITE_NORMAL
+    )
     
     joints_target = compute_ik_moveit2(targetT, timeout=5.0, attempts=10)
     if not joints_target:
@@ -3082,7 +2716,6 @@ def action_knob():
     if abs(KNOB_INSERT_DEPTH) > 1e-6:
         # 使用实际到达的关节角度，而不是IK计算的理论值
         print(f"\n步骤3: 沿末端z轴插入 {KNOB_INSERT_DEPTH*100:.1f}cm...")
-        
         actual_joints_step3 = get_current_joints()  # 获取实际当前位置
         actual_T_step3 = piper_arm.forward_kinematics(actual_joints_step3)
         actual_xyz_step3 = actual_T_step3[:3, 3]
@@ -3292,7 +2925,7 @@ def initialize_moveit2(external_node=None):
         
         # 等待action server可用
         print("  ⏳ 等待MoveIt2 action server...")
-        timeout = 15.0
+        timeout = 30.0  # Foxy 启动较慢，延长等待时间
         start_time = time_module.time()
         
         while not move_group.server_is_ready():
@@ -3304,7 +2937,7 @@ def initialize_moveit2(external_node=None):
                 print("      启动命令: ./start_moveit2_clean.sh")
                 
                 # 清理资源
-                cleanup_moveit2_resources()
+                cleanup_moveit2_resources(shutdown_rclpy=True)
                 MOVEIT_AVAILABLE = False
                 return False
             
@@ -3342,12 +2975,12 @@ def initialize_moveit2(external_node=None):
         print(f"  ✗ MoveIt2初始化失败: {e}")
         import traceback
         traceback.print_exc()
-        cleanup_moveit2_resources()
+        cleanup_moveit2_resources(shutdown_rclpy=True)
         MOVEIT_AVAILABLE = False
         return False
 
 
-def cleanup_moveit2_resources():
+def cleanup_moveit2_resources(shutdown_rclpy=False):
     """清理MoveIt2资源（内部函数）"""
     global move_group, joint_state_timer, joint_state_publisher
     global ros2_executor, ros2_spin_thread, moveit_node
@@ -3387,6 +3020,21 @@ def cleanup_moveit2_resources():
     except:
         pass
 
+    try:
+        if moveit_node is not None:
+            moveit_node.destroy_node()
+        moveit_node = None
+    except:
+        pass
+
+    if shutdown_rclpy:
+        try:
+            import rclpy
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
+
 
 # ========================================
 # 主程序
@@ -3395,47 +3043,36 @@ def cleanup_moveit2_resources():
 def main():
     global piper, piper_arm, move_group, moveit_node, display_trajectory_publisher, ee_path_publisher, ee_trail_publisher
     global MOVEIT_AVAILABLE, joint_state_publisher, joint_state_timer, ros2_executor, ros2_spin_thread  # 🔧 修复：在函数开始声明，避免语法错误
-    global APRILTAG_REFERENCE_POSE_BASE  # 🔧 新增：声明全局变量
     
-    # ========================================
-    # 初始化AprilTag参考姿态
-    # ========================================
     print("="*70)
     print("按钮操作执行器 - 独立版本")
     print("="*70)
-    
-    # 从宏定义的RPY计算旋转矩阵
-    print(f"\n🏷️  AprilTag基座标系位姿:")
-    print(f"   位置: ({APRILTAG_BASE_X:.3f}, {APRILTAG_BASE_Y:.3f}, {APRILTAG_BASE_Z:.3f})")
-    print(f"   姿态: Roll={APRILTAG_BASE_ROLL*180/PI:.1f}°, Pitch={APRILTAG_BASE_PITCH*180/PI:.1f}°, Yaw={APRILTAG_BASE_YAW*180/PI:.1f}°")
-    
-    # 计算旋转矩阵
-    APRILTAG_REFERENCE_POSE_BASE = euler_to_rotation_matrix(
-        APRILTAG_BASE_ROLL, 
-        APRILTAG_BASE_PITCH, 
-        APRILTAG_BASE_YAW
-    )
-    print("   ✓ AprilTag参考姿态已初始化")
-    
-    # 计算并显示夹爪垂直按压时的姿态
-    print(f"\n🤖 夹爪垂直按压时的目标姿态:")
-    gripper_roll_perp = -APRILTAG_BASE_ROLL
-    gripper_pitch_perp = APRILTAG_BASE_PITCH
-    gripper_yaw_perp = APRILTAG_BASE_YAW
-    print(f"   Roll={gripper_roll_perp*180/PI:.1f}° (= -Tag_Roll)")
-    print(f"   Pitch={gripper_pitch_perp*180/PI:.1f}° (= Tag_Pitch)")
-    print(f"   Yaw={gripper_yaw_perp*180/PI:.1f}° (= Tag_Yaw)")
-    print(f"   💡 注意：Roll取反是因为夹爪和Tag法向量反向！")
-    
-    print("\n" + "="*70)
-    print(f"\n📍 目标位置: ({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f}) ← 按钮/旋钮的实际位置")
-    if USE_6D_POSE:
-        if APRILTAG_REFERENCE_POSE_BASE is not None:
-            print(f"   姿态来源: AprilTag自动计算（垂直按压模式）")
-            print(f"   └─ Roll={gripper_roll_perp*180/PI:.1f}°, Pitch={gripper_pitch_perp*180/PI:.1f}°, Yaw={gripper_yaw_perp*180/PI:.1f}°")
-        else:
-            print(f"   姿态来源: 手动配置（TARGET_ROLL/PITCH/YAW）")
-            print(f"   └─ Roll={TARGET_ROLL*180/PI:.1f}°, Pitch={TARGET_PITCH*180/PI:.1f}°, Yaw={TARGET_YAW*180/PI:.1f}°")
+    print(f"\n📍 目标位姿: ({TARGET_X:.3f}, {TARGET_Y:.3f}, {TARGET_Z:.3f})")
+    if USE_SURFACE_NORMAL_ALIGNMENT:
+        try:
+            normal_vec = np.array(TARGET_SURFACE_NORMAL, dtype=float).flatten()
+            if normal_vec.size < 3:
+                normal_vec = np.array([0.0, 0.0, 0.0])
+        except Exception:
+            normal_vec = np.array([0.0, 0.0, 0.0])
+        normal_vec = normal_vec[:3]
+        print(
+            f"   法向量: [{normal_vec[0]: .3f}, {normal_vec[1]: .3f}, {normal_vec[2]: .3f}]"
+        )
+        try:
+            ref_vec = np.array(REFERENCE_AXIS_HINT, dtype=float).flatten()
+            if ref_vec.size < 3:
+                ref_vec = np.array([0.0, 0.0, 1.0])
+        except Exception:
+            ref_vec = np.array([0.0, 0.0, 1.0])
+        ref_vec = ref_vec[:3]
+        direction_label = "反方向" if GRIPPER_Z_FACES_OPPOSITE_NORMAL else "同方向"
+        print(
+            f"   参考轴: [{ref_vec[0]: .3f}, {ref_vec[1]: .3f}, {ref_vec[2]: .3f}]"
+        )
+        print(f"   末端Z轴: 指向法向量的{direction_label}")
+    elif USE_6D_POSE:
+        print(f"   姿态: Roll={TARGET_ROLL:.3f}, Pitch={TARGET_PITCH:.3f}, Yaw={TARGET_YAW:.3f} (弧度)")
     print(f"🎯 动作类型: {ACTION_TYPE.upper()}")
     print(f"🔧 控制模式: {'MoveIt' if USE_MOVEIT and MOVEIT_AVAILABLE else 'SDK'}")
     
@@ -3485,185 +3122,18 @@ def main():
     piper.GripperCtrl(70000, 1000, 0x01, 0)
     print("  ✓ 硬件初始化完成")
     
-    # 初始化 ROS
+    # 初始化 ROS / MoveIt2
     print("\n初始化ROS...")
-    if MOVEIT_AVAILABLE:
-        # 使用ROS2
-        import rclpy
-        import rclpy.executors
-        import threading
-        
-        # 🔧 关键修复：清理可能存在的旧上下文（第二次运行时）
-        try:
-            if rclpy.ok():
-                print("  ⚠️  检测到旧的ROS2上下文，正在清理...")
-                rclpy.shutdown()
-                time.sleep(0.5)
-        except:
-            pass
-        
-        rclpy.init()
-        print("  ✓ ROS2初始化完成")
-    else:
-        # 使用ROS1或FakeRospy
+    moveit_ready = False
+    if USE_MOVEIT and MOVEIT_AVAILABLE:
+        moveit_ready = initialize_moveit2()
+        if not moveit_ready:
+            print("  ⚠️  MoveIt2初始化失败，将降级为SDK模式")
+            MOVEIT_AVAILABLE = False
+    if not moveit_ready:
+        # 使用ROS1或FakeRospy（无需MoveIt）
         rospy.init_node('button_action_node', anonymous=True)
         print("  ✓ ROS初始化完成")
-    
-    # 初始化 MoveIt (如果需要)
-    if USE_MOVEIT and MOVEIT_AVAILABLE:
-        try:
-            # 创建ROS2节点（使用唯一名称避免冲突）
-            import time as time_module
-            node_name = f'button_action_moveit_{int(time_module.time() * 1000)}'
-            moveit_node = Node(node_name)
-            print("  ✓ ROS2节点已创建")
-            
-            # 启动joint_states发布器（MoveIt2需要）
-            from sensor_msgs.msg import JointState
-            joint_state_publisher = moveit_node.create_publisher(JointState, '/joint_states', 10)
-            joint_state_timer = moveit_node.create_timer(0.1, publish_joint_states_callback)  # 10Hz
-            print("  ✓ joint_states发布器已启动 (10Hz)")
-            
-            # 【重要】先创建Action Client，再启动spin线程
-            # 这样可以避免ROS2 Foxy的wait set索引越界bug
-            move_group = ActionClient(moveit_node, MoveGroupAction, '/move_action')
-            print("  ✓ Action Client已创建")
-            
-            # 启动后台线程持续spin节点（让timer回调能运行）
-            ros2_executor = rclpy.executors.SingleThreadedExecutor()
-            ros2_executor.add_node(moveit_node)
-            ros2_spin_thread = threading.Thread(target=ros2_executor.spin, daemon=True)
-            ros2_spin_thread.start()
-            print("  ✓ ROS2 spin线程已启动")
-            
-            # 等待joint_states开始发布
-            import time as time_module
-            time_module.sleep(0.5)
-            
-            # 等待action server可用
-            print("  ⏳ 等待MoveIt2 action server...")
-            
-            # 🔧 关键修复：增加等待时间和重试机制（第二次运行需要更多时间）
-            timeout = 15.0  # 从10秒增加到15秒
-            start_time = time_module.time()
-            retry_count = 0
-            while not move_group.server_is_ready():
-                time_module.sleep(0.2)  # 增加睡眠间隔减少CPU占用
-                elapsed = time_module.time() - start_time
-                if elapsed > timeout:
-                    print("  ⚠️  MoveIt2 action server不可用，将使用SDK模式")
-                    print("  💡 提示: 请确保已运行 ./start_moveit2.sh")
-                    
-                    # 🔧 关键修复：完全清理ROS2资源，避免段错误
-                    # 1. 销毁Action Client
-                    try:
-                        move_group.destroy()
-                    except:
-                        pass
-                    move_group = None
-                    
-                    # 1.5 停止joint_states timer/publisher
-                    try:
-                        if joint_state_timer is not None:
-                            joint_state_timer.cancel()
-                            joint_state_timer = None
-                    except:
-                        pass
-                    try:
-                        if moveit_node is not None and joint_state_publisher is not None:
-                            moveit_node.destroy_publisher(joint_state_publisher)
-                    except:
-                        pass
-                    joint_state_publisher = None
-                    
-                    # 2. 停止spin线程
-                    try:
-                        ros2_executor.shutdown()
-                    except:
-                        pass
-                    ros2_executor = None
-                    try:
-                        if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
-                            ros2_spin_thread.join(timeout=1.0)
-                    except:
-                        pass
-                    ros2_spin_thread = None
-                    
-                    # 3. 销毁节点
-                    try:
-                        moveit_node.destroy_node()
-                    except:
-                        pass
-                    moveit_node = None
-                    
-                    # 4. 关闭ROS2上下文
-                    try:
-                        rclpy.shutdown()
-                    except:
-                        pass
-                    
-                    # 5. 标记MoveIt不可用
-                    MOVEIT_AVAILABLE = False
-                    print("  ℹ️  已完全关闭MoveIt2，使用SDK模式")
-                    break
-                
-                # 每5秒打印一次等待状态
-                if int(elapsed) % 5 == 0 and int(elapsed) > 0 and retry_count != int(elapsed):
-                    retry_count = int(elapsed)
-                    print(f"  ⏳ 仍在等待... ({elapsed:.0f}s/{timeout:.0f}s)")
-            
-            if move_group is not None:
-                print("  ✓ MoveIt2初始化完成")
-                print(f"  ✓ 规划器: {PLANNER_ID}")
-                print(f"  ✓ Action client已连接: /move_action")
-        except Exception as e:
-            print(f"  ⚠️  MoveIt初始化失败: {e}")
-            import traceback
-            traceback.print_exc()
-            print("  将使用SDK模式")
-            
-            # 🔧 关键修复：清理已创建的资源，避免段错误
-            try:
-                if 'move_group' in locals() and move_group is not None:
-                    move_group.destroy()
-                    move_group = None
-            except:
-                pass
-            
-            try:
-                if joint_state_timer is not None:
-                    joint_state_timer.cancel()
-                    joint_state_timer = None
-            except:
-                pass
-            try:
-                if moveit_node is not None and joint_state_publisher is not None:
-                    moveit_node.destroy_publisher(joint_state_publisher)
-            except:
-                pass
-            joint_state_publisher = None
-            
-            try:
-                if 'ros2_executor' in locals() and ros2_executor is not None:
-                    ros2_executor.shutdown()
-            except:
-                pass
-            try:
-                if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
-                    ros2_spin_thread.join(timeout=1.0)
-            except:
-                pass
-            ros2_spin_thread = None
-            
-            try:
-                if 'moveit_node' in locals() and moveit_node is not None:
-                    moveit_node.destroy_node()
-                    moveit_node = None
-            except:
-                pass
-            
-            # 初始化失败后不使用MoveIt
-            MOVEIT_AVAILABLE = False
     
     # 初始化 Piper Arm
     piper_arm = PiperArm()
@@ -3758,63 +3228,8 @@ def main():
     
     # 清理资源 🔧 关键修复：防止段错误
     print("\n正在清理资源...")
-    if MOVEIT_AVAILABLE:
-        try:
-            # 1. 先停止joint_states timer/publisher，防止回调继续运行
-            if joint_state_timer is not None:
-                try:
-                    joint_state_timer.cancel()
-                except Exception as e:
-                    print(f"    (忽略timer错误: {e})")
-                joint_state_timer = None
-            if moveit_node is not None and joint_state_publisher is not None:
-                try:
-                    moveit_node.destroy_publisher(joint_state_publisher)
-                except Exception as e:
-                    print(f"    (忽略publisher错误: {e})")
-            joint_state_publisher = None
-
-            # 2. 停止executor和spin线程，确保没有后台线程调用rcl接口
-            if ros2_executor is not None:
-                try:
-                    print("  - 正在停止 executor...")
-                    ros2_executor.shutdown()
-                except Exception as e:
-                    print(f"    (忽略错误: {e})")
-                ros2_executor = None
-            if ros2_spin_thread is not None and ros2_spin_thread.is_alive():
-                ros2_spin_thread.join(timeout=1.0)
-            ros2_spin_thread = None
-
-            # 3. 现在销毁Action Client，避免spin线程仍在访问
-            if move_group is not None:
-                try:
-                    print("  - 正在销毁 Action Client...")
-                    move_group.destroy()
-                except Exception as e:
-                    print(f"    (忽略错误: {e})")
-                move_group = None
-
-            # 4. 销毁节点
-            if moveit_node is not None:
-                try:
-                    print("  - 正在销毁 node...")
-                    moveit_node.destroy_node()
-                except Exception as e:
-                    print(f"    (忽略错误: {e})")
-                moveit_node = None
-
-            # 5. 关闭rclpy
-            try:
-                if rclpy.ok():
-                    print("  - 正在关闭 rclpy...")
-                    rclpy.shutdown()
-            except Exception as e:
-                print(f"    (忽略错误: {e})")
-            
-            print("  ✓ 资源清理完成")
-        except Exception as e:
-            print(f"  ⚠️  清理资源时出现异常（可忽略）: {e}")
+    if USE_MOVEIT and MOVEIT_AVAILABLE:
+        cleanup_moveit2_resources(shutdown_rclpy=True)
     
     # 5. 最后禁用机械臂（可选）
     # try:
@@ -3826,114 +3241,6 @@ def main():
     #     pass
     
     print("\n程序正常结束")
-
-
-def action_approach_panel_demo():
-    """
-    示例：让夹爪正对面板的不同接近方式
-    
-    演示如何使用不同的姿态策略接近面板上的按钮
-    """
-    print("\n" + "="*70)
-    print("示例：夹爪正对面板 - 不同接近方式演示")
-    print("="*70)
-    
-    if APRILTAG_REFERENCE_POSE_BASE is None:
-        print("❌ 错误：未设置面板参考姿态！")
-        print("   请先在HOME位姿观察AprilTag，记录面板姿态")
-        return False
-    
-    # 假设按钮位置（需要替换为实际检测值）
-    button_x = TARGET_X if TARGET_X is not None else 0.4
-    button_y = TARGET_Y if TARGET_Y is not None else 0.0
-    button_z = TARGET_Z if TARGET_Z is not None else 0.2
-    button_xyz = np.array([button_x, button_y, button_z])
-    
-    print(f"\n目标按钮位置（基座系）: ({button_x:.3f}, {button_y:.3f}, {button_z:.3f})")
-    print(f"面板参考姿态已设置: ✓")
-    
-    # ========== 方式1：平行于面板（默认） ==========
-    print("\n" + "-"*70)
-    print("方式1: 平行于面板 (parallel)")
-    print("-"*70)
-    R_offset = get_gripper_approach_rotation('parallel')
-    T_parallel = create_aligned_target_pose(button_xyz, R_offset)
-    
-    print("目标姿态（旋转矩阵）:")
-    print(f"  [{T_parallel[0,0]:7.4f}, {T_parallel[0,1]:7.4f}, {T_parallel[0,2]:7.4f}]")
-    print(f"  [{T_parallel[1,0]:7.4f}, {T_parallel[1,1]:7.4f}, {T_parallel[1,2]:7.4f}]")
-    print(f"  [{T_parallel[2,0]:7.4f}, {T_parallel[2,1]:7.4f}, {T_parallel[2,2]:7.4f}]")
-    print("说明: 夹爪与面板保持平行，适用于侧面滑动")
-    
-    # ========== 方式2：垂直于面板（按压姿态） ==========
-    print("\n" + "-"*70)
-    print("方式2: 垂直于面板 (perpendicular) - 推荐用于按压")
-    print("-"*70)
-    R_offset = get_gripper_approach_rotation('perpendicular')
-    T_perpendicular = create_aligned_target_pose(button_xyz, R_offset)
-    
-    print("目标姿态（旋转矩阵）:")
-    print(f"  [{T_perpendicular[0,0]:7.4f}, {T_perpendicular[0,1]:7.4f}, {T_perpendicular[0,2]:7.4f}]")
-    print(f"  [{T_perpendicular[1,0]:7.4f}, {T_perpendicular[1,1]:7.4f}, {T_perpendicular[1,2]:7.4f}]")
-    print(f"  [{T_perpendicular[2,0]:7.4f}, {T_perpendicular[2,1]:7.4f}, {T_perpendicular[2,2]:7.4f}]")
-    print("说明: 夹爪垂直于面板，适用于push/plugin按压动作")
-    
-    # ========== 方式3：倾斜15°（预备姿态） ==========
-    print("\n" + "-"*70)
-    print("方式3: 倾斜15° (tilted_15)")
-    print("-"*70)
-    R_offset = get_gripper_approach_rotation('tilted_15')
-    T_tilted = create_aligned_target_pose(button_xyz, R_offset)
-    
-    print("目标姿态（旋转矩阵）:")
-    print(f"  [{T_tilted[0,0]:7.4f}, {T_tilted[0,1]:7.4f}, {T_tilted[0,2]:7.4f}]")
-    print(f"  [{T_tilted[1,0]:7.4f}, {T_tilted[1,1]:7.4f}, {T_tilted[1,2]:7.4f}]")
-    print(f"  [{T_tilted[2,0]:7.4f}, {T_tilted[2,1]:7.4f}, {T_tilted[2,2]:7.4f}]")
-    print("说明: 夹爪倾斜15°，适用于按压前的预备姿态")
-    
-    print("\n" + "="*70)
-    print("提示：在实际动作中使用：")
-    print("  1. 获取按钮位置: button_xyz = [TARGET_X, TARGET_Y, TARGET_Z]")
-    print("  2. 选择接近模式: R_gripper = get_gripper_approach_rotation('perpendicular')")
-    print("  3. 构建目标位姿: T_target = create_aligned_target_pose(button_xyz, R_gripper)")
-    print("  4. 执行运动: ik_result = piper_arm.inverse_kinematics_search(T_target, ...)")
-    print("="*70)
-    
-    # 数值验证
-    print("\n" + "="*70)
-    print("📊 姿态关系验证（垂直按压时）")
-    print("="*70)
-    R_perp = get_gripper_approach_rotation('perpendicular')
-    gripper_rpy = rotation_matrix_to_euler(R_perp)
-    tag_rpy = (APRILTAG_BASE_ROLL, APRILTAG_BASE_PITCH, APRILTAG_BASE_YAW)
-    
-    print(f"\nAprilTag姿态:")
-    print(f"  Roll  = {tag_rpy[0]*180/PI:7.2f}° ")
-    print(f"  Pitch = {tag_rpy[1]*180/PI:7.2f}° ")
-    print(f"  Yaw   = {tag_rpy[2]*180/PI:7.2f}° ")
-    
-    print(f"\n夹爪目标姿态 (perpendicular):")
-    print(f"  Roll  = {gripper_rpy[0]*180/PI:7.2f}° (应为 {-tag_rpy[0]*180/PI:7.2f}°)")
-    print(f"  Pitch = {gripper_rpy[1]*180/PI:7.2f}° (应为 {tag_rpy[1]*180/PI:7.2f}°)")
-    print(f"  Yaw   = {gripper_rpy[2]*180/PI:7.2f}° (应为 {tag_rpy[2]*180/PI:7.2f}°)")
-    
-    # 验证
-    roll_ok = abs(gripper_rpy[0] - (-tag_rpy[0])) < 0.01
-    pitch_ok = abs(gripper_rpy[1] - tag_rpy[1]) < 0.01
-    yaw_ok = abs(gripper_rpy[2] - tag_rpy[2]) < 0.01
-    
-    if roll_ok and pitch_ok and yaw_ok:
-        print("\n✅ 姿态关系正确！")
-        print("   Roll取反 ✓, Pitch相同 ✓, Yaw相同 ✓")
-    else:
-        print("\n❌ 姿态关系不正确！")
-        if not roll_ok: print("   Roll验证失败")
-        if not pitch_ok: print("   Pitch验证失败")
-        if not yaw_ok: print("   Yaw验证失败")
-    
-    print("="*70)
-    
-    return True
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import numpy as np
 import pyrealsense2 as rs
 import time
 import threading
+from queue import Queue
 
 # 导入坐标转换所需的模块
 from piper_sdk import C_PiperInterface_V2
@@ -25,15 +26,23 @@ from utils.utils_math import quaternion_to_rotation_matrix
 import math
 
 # 导入面板法向量计算工具
-from utils.utils_plane import compute_robust_panel_normal, visualize_panel_normal
+from utils.utils_plane import (
+    compute_robust_panel_normal, 
+    compute_panel_normal_from_blue_region, 
+    visualize_panel_normal,
+    BLUE_HSV_LOWER as UTILS_HSV_LOWER,  # 导入 utils_plane.py 中的参数
+    BLUE_HSV_UPPER as UTILS_HSV_UPPER
+)
 
 PI = math.pi
 
 # ========================================
 # 性能调优参数
 # ========================================
-DETECTION_SKIP_FRAMES = 1  # 每2帧检测1次
-YOLO_CONF_THRESHOLD = 0.5  # 置信度阈值
+DETECTION_SKIP_FRAMES = 0  # 🔧 异步模式：每帧都放入队列，检测线程自动处理最新帧
+YOLO_CONF_THRESHOLD = 0.4  # 🔧 降低阈值提高召回率（小图像需要）
+YOLO_SCALE_FACTOR = 0.1    # 🔧 🚀 极限模式：640x480 → 64x48 (100倍加速!)
+UI_REFRESH_RATE = 30       # 🔧 UI刷新率（Hz），独立于检测频率
 
 # ========================================
 # 全局变量
@@ -42,6 +51,12 @@ all_detections = []
 selected_button_index = -1
 selected_button_locked = False
 selected_box_signature = None
+
+# 🔧 异步检测相关
+detection_lock = threading.Lock()  # 保护检测结果的锁
+detection_queue = Queue(maxsize=5)  # 🔧 待检测帧队列（缓存5帧，检测线程自动取最新）
+detection_running = True  # 检测线程运行标志
+detection_frozen = False  # 🔧 检测冻结标志（选中后停止检测更新）
 
 # 鼠标位置
 mouse_x, mouse_y = 0, 0
@@ -63,12 +78,36 @@ frame_counter = 0
 last_fps_time = time.time()
 fps_counter = 0
 current_fps = 0.0
+last_detect_time_ms = 0.0  # 最近一次检测耗时
 
 # 面板法向量缓存
 global_panel_normal = None
+global_panel_normal_base = None  # 🔧 实时存储基座系法向量
 global_panel_info = None
 panel_last_update = 0.0
-PANEL_CACHE_TIME = 2.0  # 缓存2秒
+PANEL_CACHE_TIME = 0.0  # � 设为0表示每次检测都更新法向量，实现实时效果
+
+# 🎨 HSV颜色过滤参数（蓝色面板）
+# 使用 tune_blue_hsv.py 调试得到的最佳参数
+# 可通过环境变量覆盖：export BLUE_HSV_LOWER="92,108,43" BLUE_HSV_UPPER="111,179,244"
+import os
+def _parse_hsv_env(var_name, default):
+    env_val = os.environ.get(var_name)
+    if env_val:
+        try:
+            return np.array([int(x) for x in env_val.split(',')])
+        except:
+            print(f"⚠️  环境变量 {var_name} 格式错误，使用默认值")
+    return default
+
+# 🔧 使用 utils_plane.py 中精心调整过的参数作为默认值
+BLUE_HSV_LOWER = _parse_hsv_env('BLUE_HSV_LOWER', UTILS_HSV_LOWER)
+BLUE_HSV_UPPER = _parse_hsv_env('BLUE_HSV_UPPER', UTILS_HSV_UPPER)
+
+print(f"🎨 HSV颜色过滤参数 (来自 utils_plane.py):")
+print(f"  下限: {BLUE_HSV_LOWER}")
+print(f"  上限: {BLUE_HSV_UPPER}")
+print(f"  注意: 这些参数与 utils_plane.py 同步，已精心调整")
 
 
 # ========================================
@@ -79,24 +118,49 @@ def mouse_callback(event, x, y, flags, param):
     global selected_button_index, mouse_x, mouse_y, all_detections
     global current_depth_data, current_color_data, current_depth_intrin
     global selected_button_locked, is_paused, paused_detections
-    global selected_box_signature
+    global selected_box_signature, global_panel_info
     
     mouse_x, mouse_y = x, y
     
     if event == cv2.EVENT_LBUTTONDOWN:
-        print(f"\n[鼠标点击] 位置: ({x}, {y})")
+        print(f"\n{'='*70}")
+        print(f"[鼠标点击] 位置: ({x}, {y})")
+        print(f"[检测状态] 当前检测到 {len(all_detections)} 个按钮")
         
-        detections_to_check = paused_detections if is_paused else all_detections
+        # 🔒 线程安全地读取检测结果
+        with detection_lock:
+            detections_to_check = paused_detections if is_paused else list(all_detections)
+            panel_info_snapshot = global_panel_info
         
         found = False
         for idx, det in enumerate(detections_to_check):
             x1, y1, x2, y2, class_name, conf, center_3d = det
             
+            print(f"  检查按钮 #{idx}: 类型={class_name}, 框=[{x1},{y1},{x2},{y2}]", end="")
+            
             if x1 <= x <= x2 and y1 <= y <= y2:
-                print(f" → ✓ 匹配按钮 #{idx}")
+                print(" → ✓ 匹配!")
                 found = True
                 selected_button_index = idx
                 selected_button_locked = True
+                
+                # 🔧 不再冻结检测，保持检测框实时跟随
+                global detection_frozen
+                detection_frozen = False  # 改为False，保持检测更新
+                
+                # 🔧 立即强制刷新显示（不等待下一帧）
+                if current_color_data is not None:
+                    instant_display = visualize_detections(
+                        current_color_data,
+                        detections_to_check,
+                        selected_button_index,
+                        panel_info=panel_info_snapshot
+                    )
+                    cv2.imshow('detection', instant_display)
+                    cv2.waitKey(1)  # 立即刷新
+                    
+                # 🔊 可选：终端响铃（提供音频反馈）
+                print('\a', end='', flush=True)  # ASCII Bell
                 
                 if center_3d is None and current_depth_data is not None:
                     center_3d, stats = extract_roi_cloud(
@@ -109,24 +173,31 @@ def mouse_callback(event, x, y, flags, param):
                     
                     if is_paused:
                         paused_detections[idx] = (x1, y1, x2, y2, class_name, conf, center_3d)
+                    
+                    # 🔒 线程安全地更新all_detections
+                    with detection_lock:
                         if idx < len(all_detections):
                             all_detections[idx] = (x1, y1, x2, y2, class_name, conf, center_3d)
-                    else:
-                        all_detections[idx] = (x1, y1, x2, y2, class_name, conf, center_3d)
                 
                 remember_selected_detection(det)
                 
-                print(f"\n{'='*60}")
-                print(f"✓ 已选择按钮 #{idx}")
+                print(f"\n{'='*70}")
+                print(f"✓✓✓ 已选择按钮 #{idx} 【已锁定】✓✓✓")
                 print(f"  类型: {class_name}")
                 print(f"  置信度: {conf:.2f}")
+                print(f"  检测框: [{x1}, {y1}, {x2}, {y2}]")
+                print(f"  2D中心: ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
                 if center_3d is not None:
-                    print(f"  相机坐标: ({center_3d[0]:.3f}, {center_3d[1]:.3f}, {center_3d[2]:.3f}) m")
-                print(f"{'='*60}")
+                    print(f"  3D位置: ({center_3d[0]:.3f}, {center_3d[1]:.3f}, {center_3d[2]:.3f})")
+                print(f"  提示: 按 ENTER 确认 | 按 ESC 取消选择")
+                print(f"{'='*70}")
                 break
+            else:
+                print(" → ✗ 不匹配")
         
         if not found:
-            print(" → ✗ 未点击到按钮")
+            print(f"\n  ✗✗✗ 点击位置 ({x}, {y}) 不在任何按钮内")
+            print(f"{'='*70}")
 
 
 # ========================================
@@ -195,17 +266,170 @@ def sync_selection_with_detections():
 
 
 # ========================================
+# 🔧 异步检测线程
+# ========================================
+def async_detection_worker(model, node):
+    """
+    后台检测线程：从队列获取帧，执行YOLO检测，更新全局结果
+    这样主线程可以保持30fps实时显示画面
+    """
+    global all_detections, detection_running, last_detect_time_ms
+    global global_panel_normal, global_panel_normal_base
+    global global_panel_info, panel_last_update
+    
+    node.get_logger().info("🚀 异步检测线程已启动")
+    
+    while detection_running and rclpy.ok():
+        try:
+            # 🔧 极限优化：清空队列，只处理最新帧（避免任何滞后）
+            frame_data = None
+            while not detection_queue.empty():
+                try:
+                    frame_data = detection_queue.get_nowait()
+                except:
+                    break
+            
+            # 如果队列为空，短暂休眠后继续（非阻塞）
+            if frame_data is None:
+                time.sleep(0.01)  # 10ms轮询间隔
+                continue
+            
+            # 检查停止信号（None表示退出）
+            if not isinstance(frame_data, tuple):
+                break
+            
+            color_data, depth_data, depth_intrin = frame_data
+            
+            # 🔧 YOLO检测（缩小图像加速）
+            detect_start = time.time()
+            
+            # 使用最快的插值方法
+            color_data_small = cv2.resize(color_data, None, 
+                                         fx=YOLO_SCALE_FACTOR, fy=YOLO_SCALE_FACTOR, 
+                                         interpolation=cv2.INTER_NEAREST)  # 最快插值
+            
+            target_boxes_small = YOLODetection(model, color_data_small, conf_threshold=YOLO_CONF_THRESHOLD)
+            detect_time_ms = (time.time() - detect_start) * 1000
+            
+            # 缩放回原始尺寸
+            target_boxes = []
+            for x1, y1, x2, y2, class_name, conf in target_boxes_small:
+                target_boxes.append((
+                    int(x1 / YOLO_SCALE_FACTOR), int(y1 / YOLO_SCALE_FACTOR),
+                    int(x2 / YOLO_SCALE_FACTOR), int(y2 / YOLO_SCALE_FACTOR),
+                    class_name, conf
+                ))
+            
+            # 🔒 线程安全地更新检测结果
+            with detection_lock:
+                all_detections = []
+                for box in target_boxes:
+                    x1, y1, x2, y2, class_name, conf = box
+                    all_detections.append((x1, y1, x2, y2, class_name, conf, None))
+                
+                last_detect_time_ms = detect_time_ms
+                sync_selection_with_detections()
+            
+            # 🔧 计算面板法向量（带缓存，低频更新）
+            # ✅ 新方案：直接从蓝色区域计算，不依赖按钮数量
+            current_time = time.time()
+            should_update_normal = (
+                PANEL_CACHE_TIME <= 0.0 or
+                (current_time - panel_last_update > PANEL_CACHE_TIME)
+            )
+            
+            if should_update_normal:
+                try:
+                    panel_info = compute_panel_normal_from_blue_region(
+                        depth_data=depth_data,
+                        color_image=color_data,
+                        depth_intrin=depth_intrin,
+                        hsv_lower=BLUE_HSV_LOWER,
+                        hsv_upper=BLUE_HSV_UPPER,
+                        verbose=False
+                    )
+                    
+                    if panel_info is not None:
+                        normal_camera = panel_info['normal']
+                        normal_base = None
+
+                        if node.piper is not None and node.piper_arm is not None:
+                            normal_base = transform_normal_camera_to_base(
+                                normal_camera, node.piper, node.piper_arm
+                            )
+                        panel_info['normal_base'] = normal_base
+                        panel_info['timestamp'] = current_time
+
+                        with detection_lock:
+                            global_panel_normal = normal_camera
+                            global_panel_normal_base = normal_base
+                            global_panel_info = panel_info
+                            panel_last_update = current_time
+                        
+                        # 🔧 发布相机系法向量（兼容旧订阅者）
+                        normal_msg = Vector3()
+                        normal_msg.x = float(normal_camera[0])
+                        normal_msg.y = float(normal_camera[1])
+                        normal_msg.z = float(normal_camera[2])
+                        node.normal_pub.publish(normal_msg)
+
+                        # 🔧 额外发布基座系法向量（若可转换）
+                        if normal_base is not None and node.normal_base_pub is not None:
+                            normal_base_msg = Vector3()
+                            normal_base_msg.x = float(normal_base[0])
+                            normal_base_msg.y = float(normal_base[1])
+                            normal_base_msg.z = float(normal_base[2])
+                            node.normal_base_pub.publish(normal_base_msg)
+                        
+                        node.get_logger().info(
+                            f"✓ 法向量(相机系): ({normal_camera[0]:+.3f}, {normal_camera[1]:+.3f}, {normal_camera[2]:+.3f})"
+                            + (
+                                f" → (基座系): ({normal_base[0]:+.3f}, {normal_base[1]:+.3f}, {normal_base[2]:+.3f})"
+                                if normal_base is not None else
+                                "（⚠️ 手眼不可用，暂未转换）"
+                            )
+                        )
+                        
+                except Exception as e:
+                    node.get_logger().warn(f"法向量计算失败: {e}")
+        
+        except Exception as e:
+            if detection_running:  # 忽略正常退出时的异常
+                node.get_logger().error(f"❌ 检测线程异常: {e}")
+    
+    node.get_logger().info("🛑 异步检测线程已停止")
+
+
+# ========================================
 # 可视化
 # ========================================
-def visualize_detections(color_img, detections, selected_idx):
+def visualize_detections(color_img, detections, selected_idx, panel_info=None):
     """可视化检测结果"""
     annotated = color_img.copy()
+    
+    # 🔧 检查鼠标悬停（预览效果）
+    hover_idx = -1
+    for idx, det in enumerate(detections):
+        x1, y1, x2, y2, _, _, _ = det
+        if x1 <= mouse_x <= x2 and y1 <= mouse_y <= y2:
+            hover_idx = idx
+            break
     
     for idx, det in enumerate(detections):
         x1, y1, x2, y2, class_name, conf, center_3d = det
         
         if idx == selected_idx:
+            # 🔧 选中效果增强：绿色粗边框 + 半透明填充
             color = (0, 255, 0)
+            thickness = 4  # 更粗
+            
+            # 添加半透明绿色填充
+            overlay = annotated.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+            cv2.addWeighted(overlay, 0.2, annotated, 0.8, 0, annotated)
+        elif idx == hover_idx:
+            # 🔧 鼠标悬停效果：黄色边框
+            color = (0, 255, 255)
             thickness = 3
         else:
             color = (255, 0, 0)
@@ -222,13 +446,79 @@ def visualize_detections(color_img, detections, selected_idx):
             cv2.putText(annotated, coord_text, (x1, y2 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     
-    global current_fps
-    fps_text = f"FPS: {current_fps:.1f}"
-    cv2.putText(annotated, fps_text, (annotated.shape[1] - 160, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    instructions = "Click target, ENTER confirm, ESC cancel, SPACE pause"
-    cv2.putText(annotated, instructions, (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    global current_fps, last_detect_time_ms, detection_frozen
+    
+    # ========================================
+    # 顶部信息栏（深色半透明背景）
+    # ========================================
+    overlay = annotated.copy()
+    cv2.rectangle(overlay, (0, 0), (annotated.shape[1], 140), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, annotated, 0.5, 0, annotated)
+    
+    # 第一行：操作提示
+    cv2.putText(annotated, "Click:Select | ESC:Cancel | ENTER:Confirm", 
+                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    
+    # 第二行：法向量-相机系（动态，蓝色）
+    if panel_info is not None:
+        normal_cam = panel_info.get('normal') if isinstance(panel_info, dict) else None
+        if normal_cam is not None:
+            cam_text = f"Normal_Cam: ({normal_cam[0]:+.3f}, {normal_cam[1]:+.3f}, {normal_cam[2]:+.3f})"
+            cv2.putText(annotated, cam_text, (10, 55), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 200, 0), 2)
+        
+        # 第三行：法向量-基座系（固定，绿色）
+        normal_base = panel_info.get('normal_base') if isinstance(panel_info, dict) else None
+        if normal_base is not None:
+            base_text = f"Normal_Base: ({normal_base[0]:+.3f}, {normal_base[1]:+.3f}, {normal_base[2]:+.3f})"
+            cv2.putText(annotated, base_text, (10, 85), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 100), 2)
+        else:
+            cv2.putText(annotated, "Normal_Base: Computing...", (10, 85),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 100, 100), 2)
+        
+        # 第四行：面板深度 + 更新延迟
+        panel_depth = panel_info.get('median_depth') if isinstance(panel_info, dict) else None
+        timestamp = panel_info.get('timestamp') if isinstance(panel_info, dict) else None
+        
+        info_parts = []
+        if panel_depth is not None:
+            info_parts.append(f"Depth:{panel_depth*100:.1f}cm")
+        if timestamp is not None:
+            age_ms = max(0.0, (time.time() - timestamp) * 1000.0)
+            info_parts.append(f"Age:{age_ms:.0f}ms")
+        
+        if info_parts:
+            info_text = " | ".join(info_parts)
+            cv2.putText(annotated, info_text, (10, 115),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    else:
+        cv2.putText(annotated, "Normal: Waiting for detection...", (10, 55),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 100, 100), 2)
+    
+    # ========================================
+    # 右上角性能信息（紧凑布局）
+    # ========================================
+    right_x = annotated.shape[1] - 150
+    cv2.putText(annotated, f"FPS:{current_fps:.0f}", (right_x, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    
+    if last_detect_time_ms > 0:
+        cv2.putText(annotated, f"Det:{last_detect_time_ms:.0f}ms", (right_x, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2)
+    
+    cv2.putText(annotated, "LIVE", (right_x, 85),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    
+    # 🔧 鼠标位置指示（底部状态栏）
+    if 0 <= mouse_x < annotated.shape[1] and 0 <= mouse_y < annotated.shape[0]:
+        # 底部状态栏
+        cv2.rectangle(annotated, (0, annotated.shape[0] - 25), 
+                     (annotated.shape[1], annotated.shape[0]), (0, 0, 0), -1)
+        cv2.putText(annotated, f"Mouse: ({mouse_x}, {mouse_y})", 
+                   (10, annotated.shape[0] - 8),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    
     return annotated
 
 
@@ -324,26 +614,27 @@ def transform_normal_camera_to_base(normal_camera, piper, piper_arm):
             msg.joint_state.joint_6 * 1e-3 * PI / 180.0,
         ]
         
-        # 正运动学：基座 → 末端link6（4x4齐次变换矩阵）
+        # 正运动学：获取 link6→base 的变换矩阵（4x4齐次变换）
         base_T_link6 = piper_arm.forward_kinematics(current_joints)
         
-        # 提取旋转矩阵（基座到link6）
-        R_base_to_link6 = base_T_link6[:3, :3]
+        # 提取旋转矩阵（link6→base）
+        # 注意：base_T_link6 表示将 link6系的点/向量 转换到 base系
+        R_link6_to_base = base_T_link6[:3, :3]
         
-        # 相机到末端link6的固定变换（手眼标定结果）
+        # 手眼标定：获取 camera→link6 的固定变换
         link6_T_camera = np.eye(4)
         link6_T_camera[:3, :3] = quaternion_to_rotation_matrix(piper_arm.link6_q_camera)
         link6_T_camera[:3, 3] = piper_arm.link6_t_camera
         
-        # 提取旋转矩阵（link6到相机）
-        R_link6_to_camera = link6_T_camera[:3, :3]
+        # 提取旋转矩阵（camera→link6）
+        R_camera_to_link6 = link6_T_camera[:3, :3]
         
-        # 组合旋转矩阵：相机 → link6 → 基座
-        # normal_base = R_base_to_link6 @ R_link6_to_camera @ normal_camera
-        R_base_to_camera = R_base_to_link6 @ R_link6_to_camera
+        # 组合旋转矩阵：camera → link6 → base
+        # 转换链：相机系 → link6系 → 基座系
+        R_camera_to_base = R_link6_to_base @ R_camera_to_link6
         
-        # 旋转法向量（只需要旋转，不需要平移）
-        normal_base = R_base_to_camera @ np.array(normal_camera)
+        # 旋转法向量（法向量只需要旋转，不需要平移）
+        normal_base = R_camera_to_base @ np.array(normal_camera)
         
         # 归一化
         normal_base = normal_base / np.linalg.norm(normal_base)
@@ -417,7 +708,8 @@ class ButtonDetectorNode(Node):
         self.point_pub = self.create_publisher(PointStamped, '/object_point', 10)
         self.type_pub = self.create_publisher(String, '/button_type', 10)
         self.marker_pub = self.create_publisher(Marker, '/object_center_marker', 10)
-        self.normal_pub = self.create_publisher(Vector3, '/button_normal', 10)  # 新增：法向量话题
+        self.normal_pub = self.create_publisher(Vector3, '/button_normal', 10)  # 相机系法向量
+        self.normal_base_pub = self.create_publisher(Vector3, '/button_normal_base', 10)  # 基座系法向量
         
         self.get_logger().info("✓ ROS2发布器已创建（包括法向量话题）")
         self.get_logger().info("="*70)
@@ -478,6 +770,13 @@ class ButtonDetectorNode(Node):
         normal_msg.y = float(normal_vector[1])
         normal_msg.z = float(normal_vector[2])
         self.normal_pub.publish(normal_msg)
+        
+        if not in_camera_frame and self.normal_base_pub is not None:
+            normal_base_msg = Vector3()
+            normal_base_msg.x = normal_msg.x
+            normal_base_msg.y = normal_msg.y
+            normal_base_msg.z = normal_msg.z
+            self.normal_base_pub.publish(normal_base_msg)
         
         frame_info = "相机坐标系" if in_camera_frame else "基座坐标系"
         self.get_logger().info(f"  ✓ 法向量已发布 ({frame_info}): ({normal_vector[0]:.4f}, {normal_vector[1]:.4f}, {normal_vector[2]:.4f})")
@@ -567,7 +866,18 @@ def main(args=None):
     global frame_counter, last_fps_time, fps_counter, current_fps
     global is_paused, paused_frame, paused_detections
     global selected_box_signature
-    global global_panel_normal, global_panel_info, panel_last_update
+    global global_panel_normal, global_panel_normal_base
+    global global_panel_info, panel_last_update
+    global detection_running, detection_frozen
+    
+    # 🚀 启动异步检测线程
+    detection_thread = threading.Thread(
+        target=async_detection_worker, 
+        args=(node.model, node), 
+        daemon=True
+    )
+    detection_thread.start()
+    node.get_logger().info("✅ 异步检测线程已启动，画面将保持实时刷新")
     
     try:
         node.get_logger().info("✓ 开始检测...")
@@ -602,8 +912,13 @@ def main(args=None):
             # 暂停模式
             if is_paused:
                 if paused_frame is not None:
+                    with detection_lock:
+                        paused_panel_info = global_panel_info
                     display_img = visualize_detections(
-                        paused_frame, paused_detections, selected_button_index
+                        paused_frame,
+                        paused_detections,
+                        selected_button_index,
+                        panel_info=paused_panel_info
                     )
                     cv2.putText(display_img, "PAUSED - Click to Select", (10, 100), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
@@ -623,69 +938,43 @@ def main(args=None):
                     break
                 continue
             
-            # 隔帧检测
+            # 🔧 异步检测：将帧发送到检测队列（非阻塞）
             frame_counter += 1
             should_detect = (frame_counter % (DETECTION_SKIP_FRAMES + 1) == 0)
             
             if should_detect:
-                scale_factor = 0.5
-                color_data_small = cv2.resize(color_data, None, fx=scale_factor, fy=scale_factor, 
-                                              interpolation=cv2.INTER_LINEAR)
-                
-                target_boxes_small = YOLODetection(node.model, color_data_small, conf_threshold=YOLO_CONF_THRESHOLD)
-                
-                target_boxes = []
-                for x1, y1, x2, y2, class_name, conf in target_boxes_small:
-                    target_boxes.append((
-                        int(x1 / scale_factor), int(y1 / scale_factor),
-                        int(x2 / scale_factor), int(y2 / scale_factor),
-                        class_name, conf
-                    ))
-                
-                all_detections = []
-                for box in target_boxes:
-                    x1, y1, x2, y2, class_name, conf = box
-                    all_detections.append((x1, y1, x2, y2, class_name, conf, None))
-                
-                sync_selection_with_detections()
-                
-                # 🔧 新增：计算全局面板法向量（带缓存）
-                current_time = time.time()
-                if len(all_detections) >= 2 and (current_time - panel_last_update > PANEL_CACHE_TIME):
-                    try:
-                        panel_info = compute_robust_panel_normal(
-                            all_detections, 
-                            depth_data, 
-                            depth_intrin,
-                            expand_ratio=0.2,
-                            min_buttons=2,
-                            verbose=False  # 避免打印过多信息
-                        )
-                        
-                        if panel_info is not None:
-                            global_panel_normal = panel_info['normal']
-                            global_panel_info = panel_info
-                            panel_last_update = current_time
-                            # node.get_logger().info(f"✓ 面板法向量更新: ({global_panel_normal[0]:.3f}, {global_panel_normal[1]:.3f}, {global_panel_normal[2]:.3f})")
-                    except Exception as e:
-                        node.get_logger().warn(f"⚠️  面板法向量计算失败: {e}")
+                # 尝试将帧放入队列（不阻塞，如果队列满了就跳过）
+                try:
+                    detection_queue.put_nowait((color_data.copy(), depth_data.copy(), depth_intrin))
+                except:
+                    pass  # 队列满了，跳过本帧检测
             
-            # 显示
-            display_img = visualize_detections(color_data, all_detections, selected_button_index)
+            # 🔧 显示（高优先级，每帧都刷新）- 使用锁保护读取
+            with detection_lock:
+                current_detections = list(all_detections)
+                current_panel_info = global_panel_info
             
-            # 🔧 新增：叠加面板法向量可视化
-            if global_panel_info is not None and len(all_detections) >= 2:
+            display_img = visualize_detections(
+                color_data,
+                current_detections,
+                selected_button_index,
+                panel_info=current_panel_info
+            )
+            
+            # 🔧 叠加面板法向量可视化
+            if current_panel_info is not None and len(current_detections) >= 2:
                 display_img = visualize_panel_normal(
                     display_img, 
-                    all_detections, 
-                    global_panel_info,
+                    current_detections, 
+                    current_panel_info,
                     show_rings=False  # 不显示环形区域，避免画面混乱
                 )
             
             cv2.imshow('detection', display_img)
             
-            # 键盘处理
-            key = cv2.waitKey(1) & 0xFF
+            # 键盘处理（使用更短的等待时间提高响应速度）
+            wait_time = max(1, int(1000 / UI_REFRESH_RATE))  # 30Hz = 33ms
+            key = cv2.waitKey(wait_time) & 0xFF
             
             if key == 32:  # SPACE
                 is_paused = not is_paused
@@ -695,13 +984,18 @@ def main(args=None):
                     paused_detections = list(all_detections)
             
             elif key == 27:  # ESC
-                node.get_logger().info("✗ 已取消选择")
+                node.get_logger().info("✗ 已取消选择，解除锁定，恢复检测")
                 selected_button_index = -1
                 selected_button_locked = False
                 selected_box_signature = None
+                detection_frozen = False  # 🔧 恢复检测
             
-            elif key == 13:  # ENTER
-                detections_to_use = paused_detections if is_paused else all_detections
+            if key == 13:  # ENTER
+                # 🔒 线程安全地读取检测结果
+                with detection_lock:
+                    detections_to_use = paused_detections if is_paused else list(all_detections)
+                    current_global_normal = global_panel_normal
+                    current_global_normal_base = global_panel_normal_base
                 
                 if selected_button_index >= 0 and selected_button_index < len(detections_to_use):
                     det = detections_to_use[selected_button_index]
@@ -721,10 +1015,12 @@ def main(args=None):
                         node.get_logger().info(f"  按钮类型: {class_name}")
                         node.get_logger().info(f"  相机坐标: ({center_3d[0]:.3f}, {center_3d[1]:.3f}, {center_3d[2]:.3f}) m")
                         
-                        # 🔧 新增：使用全局法向量（如果可用）
+                        # 🔧 使用全局法向量（如果可用）
                         use_normal = None
-                        if global_panel_normal is not None:
-                            use_normal = global_panel_normal
+                        use_normal_base = None
+                        if current_global_normal is not None:
+                            use_normal = current_global_normal
+                            use_normal_base = current_global_normal_base
                             node.get_logger().info(f"  ✓ 使用缓存的面板法向量")
                         else:
                             # 回退：尝试局部计算（仅当前按钮）
@@ -736,7 +1032,11 @@ def main(args=None):
                                     current_depth_intrin,
                                     expand_ratio=0.3,  # 局部计算时扩展稍大
                                     min_buttons=1,
-                                    verbose=True
+                                    verbose=True,
+                                    color_image=current_color_data,  # 🔧 传入彩色图像
+                                    use_color_filter=True,  # 🔧 启用蓝色面板过滤
+                                    hsv_lower=BLUE_HSV_LOWER,  # 🎨 HSV下限
+                                    hsv_upper=BLUE_HSV_UPPER   # 🎨 HSV上限
                                 )
                                 if local_panel_info is not None:
                                     use_normal = local_panel_info['normal']
@@ -752,19 +1052,27 @@ def main(args=None):
                         
                         # 🔧 转换法向量到基座坐标系（默认启用）
                         normal_in_camera_frame = True  # 初始：相机系
+                        if use_normal_base is not None:
+                            use_normal = use_normal_base
+                            normal_in_camera_frame = False
+                            node.get_logger().info(
+                                f"  面板法向量(基座系-缓存): ({use_normal_base[0]:.4f}, {use_normal_base[1]:.4f}, {use_normal_base[2]:.4f})"
+                            )
                         if node.piper is not None:
                             base_3d = transform_camera_to_base(center_3d, node.piper, node.piper_arm)
                             if base_3d is not None:
                                 node.get_logger().info(f"  按钮位置(基座系): ({base_3d[0]:.3f}, {base_3d[1]:.3f}, {base_3d[2]:.3f}) m")
                             
                             # 转换法向量到基座系
-                            use_normal_base = transform_normal_camera_to_base(use_normal, node.piper, node.piper_arm)
-                            if use_normal_base is not None:
-                                node.get_logger().info(f"  面板法向量(基座系): ({use_normal_base[0]:.4f}, {use_normal_base[1]:.4f}, {use_normal_base[2]:.4f})")
-                                use_normal = use_normal_base
-                                normal_in_camera_frame = False  # 标记为基座系
-                            else:
-                                node.get_logger().warn(f"  ⚠️  法向量坐标转换失败，将使用相机系法向量")
+                            if use_normal_base is None:
+                                converted_normal = transform_normal_camera_to_base(use_normal, node.piper, node.piper_arm)
+                                if converted_normal is not None:
+                                    use_normal = converted_normal
+                                    use_normal_base = converted_normal
+                                    node.get_logger().info(f"  面板法向量(基座系): ({converted_normal[0]:.4f}, {converted_normal[1]:.4f}, {converted_normal[2]:.4f})")
+                                    normal_in_camera_frame = False
+                                else:
+                                    node.get_logger().warn(f"  ⚠️  法向量坐标转换失败，将使用相机系法向量")
                         
                         node.get_logger().info(f"{'='*70}")
                         
@@ -775,6 +1083,7 @@ def main(args=None):
                         selected_button_index = -1
                         selected_button_locked = False
                         selected_box_signature = None
+                        detection_frozen = False  # 🔧 恢复检测
             
             elif key == ord('q'):
                 break
@@ -787,6 +1096,12 @@ def main(args=None):
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
+        # 🔧 停止异步检测线程
+        detection_running = False
+        detection_queue.put(None)  # 发送停止信号
+        detection_thread.join(timeout=2.0)
+        node.get_logger().info("✓ 异步检测线程已停止")
+        
         # 停止ROS2 spin线程
         ros_spin_running.clear()
         spin_thread.join(timeout=2.0)
