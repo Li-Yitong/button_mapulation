@@ -106,85 +106,17 @@ APRILTAG_BASE_YAW = 150 * PI / 180     # Tag的Yaw (弧度)
 
 APRILTAG_REFERENCE_POSE_BASE = None  # 面板在基座系的目标姿态（3x3旋转矩阵，从上述RPY计算得到）
 APRILTAG_ALIGNMENT_TOLERANCE = 5.0 * PI / 180  # 姿态容差：5度
-
-# ========================================
-# 新增：AprilTag RPY静态补偿
-# ========================================
-# 💡 用途：修正AprilTag检测的系统性偏差
-#    最终参考姿态 = 采样平均值 + 静态补偿
-#
-# 🔧 调试方法：
-#    1. 运行程序，观察夹爪到达目标时的姿态偏差
-#    2. 在终端查看"实际姿态 vs 目标姿态"的差值
-#    3. 如果Yaw总是偏+5度，设置 APRILTAG_RPY_OFFSET_YAW = -5.0
-#    4. 重启程序，重新采样AprilTag姿态
-#
-# 📐 示例：
-#    观察到：实际Yaw=155°, 目标Yaw=150°, 偏差=+5°
-#    修正：APRILTAG_RPY_OFFSET_YAW = -5.0
-#
-APRILTAG_RPY_OFFSET_ROLL = 0.0   # Roll补偿（度）⚠️ 正值=顺时针修正
-APRILTAG_RPY_OFFSET_PITCH = 0.0  # Pitch补偿（度）⚠️ 正值=抬头修正
-APRILTAG_RPY_OFFSET_YAW = 8    # Yaw补偿（度）⚠️ 正值=逆时针修正（常用）
-
-# ========================================
-# 新增：每种按钮的独立TCP偏移
-# ========================================
-# 💡 用途：不同按钮可能需要不同的夹爪接触点
-#
-# 📐 坐标系定义（夹爪本体坐标系）：
-#    X：向前（手指闭合方向）- 负值向后
-#    Y：向左 - 负值向右
-#    Z：向上 - 负值向下
-#
-# 🔧 调试方法：
-#    1. 运行程序，观察夹爪接触按钮的位置
-#    2. 如果偏左5mm → 减少Y：tcp_y -= 0.005
-#    3. 如果偏前10mm → 减少X：tcp_x -= 0.010
-#    4. 如果偏高8mm → 减少Z：tcp_z -= 0.008
-#
-# 📊 调整建议：
-#    - Toggle（拨动）：可能需要侧面接触，调整Y值
-#    - Push（按压）：需要正面接触，保持默认
-#    - Knob（旋转）：可能需要更深插入，调整Z值
-#    - Plugin（插拔）：可能需要更精确对准，微调X/Y
-#
-TCP_OFFSET_TOGGLE = [-0.051, 0.007, 0.080]   # Toggle拨动开关
-TCP_OFFSET_PLUGIN = [-0.051, 0.007, 0.080]   # Plugin插拔连接器
-TCP_OFFSET_PUSH = [0.075, 0.019, 0.11]     # Push按压按钮
-TCP_OFFSET_KNOB = [-0.051, 0.007, 0.12]     # Knob旋转旋钮
-
-# 🔧 快速调试开关：统一调整所有TCP（全局微调）
-# 💡 用途：快速测试偏移方向，找到问题后再调整具体按钮的TCP
-TCP_GLOBAL_OFFSET_X = 0.0  # 全局X偏移（米）⚠️ 正值向前，负值向后
-TCP_GLOBAL_OFFSET_Y = 0.0  # 全局Y偏移（米）⚠️ 正值向左，负值向右
-TCP_GLOBAL_OFFSET_Z = 0.0  # 全局Z偏移（米）⚠️ 正值向上，负值向下
 # === 标准起始/结束位姿 (可选，用于视觉检测等待位置) ===
 # HOME位姿：一个安全的观察位姿，机械臂在此位置等待视觉检测
 # 注意：J5限位为[-70°, 70°]，保留5°安全余量
-# HOME_JOINTS = [
-#     -4.68 * PI / 180,   # J1: -4.68°
-#     86.06 * PI / 180,   # J2: 86.06°
-#     -86.16 * PI / 180,  # J3: -86.16°
-#     5.27 * PI / 180,    # J4: 5.27°
-#     65.0 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
-#     0.94 * PI / 180     # J6: 0.94°
-# # ]
-# [INFO] [1764756859.183727907] [piper_status_reader]:   J1: -2.35°
-# [INFO] [1764756859.204531997] [piper_status_reader]:   J2: 54.64°
-# [INFO] [1764756859.213189347] [piper_status_reader]:   J3: -52.53°
-# [INFO] [1764756859.242250152] [piper_status_reader]:   J4: -2.95°
-# [INFO] [1764756859.267107434] [piper_status_reader]:   J5: 51.39°
-# [INFO] [1764756859.293310719] [piper_status_reader]:   J6: 7.68°
 HOME_JOINTS = [
-    -2.35 * PI / 180,   # J1: -2.35°
-    54.64 * PI / 180,   # J2: 54.64°
-    -52.53 * PI / 180,  # J3: -52.53°
-    -2.95 * PI / 180,   # J4: -2.95°
-    51.39 * PI / 180,   # J5: 51.39°
-    7.68 * PI / 180     # J6: 7.68°
+    -4.68 * PI / 180,   # J1: -4.68°
+    86.06 * PI / 180,   # J2: 86.06°
+    -86.16 * PI / 180,  # J3: -86.16°
+    5.27 * PI / 180,    # J4: 5.27°
+    65.0 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
+    0.94 * PI / 180     # J6: 0.94°
 ]
-
 # HOME_JOINTS = [
 #     0 * PI / 180,   # J1: -4.68°
 #     0 * PI / 180,   # J2: 86.06°
@@ -1465,7 +1397,7 @@ def set_apriltag_reference_from_gripper_rpy(gripper_rpy_rad, current_joints):
     Returns:
         bool: 是否成功设置
     """
-    global APRILTAG_REFERENCE_POSE_BASE, APRILTAG_BASE_ROLL, APRILTAG_BASE_PITCH, APRILTAG_BASE_YAW
+    global APRILTAG_REFERENCE_POSE_BASE
     
     # 1. 获取当前夹爪在基座系的位姿
     T_base_gripper = piper_arm.forward_kinematics(current_joints)
@@ -1482,10 +1414,6 @@ def set_apriltag_reference_from_gripper_rpy(gripper_rpy_rad, current_joints):
     # 4. 保存参考姿态（只保存旋转矩阵）
     APRILTAG_REFERENCE_POSE_BASE = R_base_panel.copy()
     
-    # 🔧 从旋转矩阵反算RPY并更新全局变量（动作函数会使用这些变量！）
-    base_rpy_rad = rotation_matrix_to_euler(R_base_panel)
-    APRILTAG_BASE_ROLL, APRILTAG_BASE_PITCH, APRILTAG_BASE_YAW = base_rpy_rad
-    
     roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
     print("\n" + "="*70)
     print("✓✓✓ 已记录面板参考姿态（基座系绝对姿态）")
@@ -1500,106 +1428,35 @@ def set_apriltag_reference_from_gripper_rpy(gripper_rpy_rad, current_joints):
 
 def set_apriltag_reference_from_base_rpy(base_rpy_rad):
     """
-    从AprilTag在基座系的RPY设置面板参考姿态（带静态补偿）
+    直接从AprilTag在基座系的RPY设置面板参考姿态（新版本）
+    
+    优势：无需坐标转换，直接使用检测节点发布的基座系姿态
     
     Args:
         base_rpy_rad: AprilTag在基座系的RPY（弧度）[roll, pitch, yaw]
     
     Returns:
         bool: 是否成功设置
-    
-    ⚠️ 新增功能：静态补偿
-    最终姿态 = 采样平均值 + 静态补偿
     """
-    global APRILTAG_REFERENCE_POSE_BASE, APRILTAG_BASE_ROLL, APRILTAG_BASE_PITCH, APRILTAG_BASE_YAW
+    global APRILTAG_REFERENCE_POSE_BASE
     
-    try:
-        # 应用静态补偿
-        compensated_rpy_rad = base_rpy_rad.copy()
-        compensated_rpy_rad[0] += np.radians(APRILTAG_RPY_OFFSET_ROLL)
-        compensated_rpy_rad[1] += np.radians(APRILTAG_RPY_OFFSET_PITCH)
-        compensated_rpy_rad[2] += np.radians(APRILTAG_RPY_OFFSET_YAW)
-        
-        # 🔧 更新全局RPY变量（动作函数会使用这些变量！）
-        APRILTAG_BASE_ROLL, APRILTAG_BASE_PITCH, APRILTAG_BASE_YAW = compensated_rpy_rad
-        
-        # 构建面板在基座系的旋转矩阵
-        roll, pitch, yaw = compensated_rpy_rad
-        APRILTAG_REFERENCE_POSE_BASE = euler_to_rotation_matrix(roll, pitch, yaw)
-        
-        # 详细输出
-        roll_deg, pitch_deg, yaw_deg = np.degrees(base_rpy_rad)
-        comp_roll_deg, comp_pitch_deg, comp_yaw_deg = np.degrees(compensated_rpy_rad)
-        
-        print("\n" + "="*70)
-        print("✓✓✓ 已记录面板参考姿态（基座系绝对姿态）")
-        print("="*70)
-        print(f"  原始采样值: R={roll_deg:+7.2f}°, P={pitch_deg:+7.2f}°, Y={yaw_deg:+7.2f}°")
-        print(f"  静态补偿值: R={APRILTAG_RPY_OFFSET_ROLL:+7.2f}°, P={APRILTAG_RPY_OFFSET_PITCH:+7.2f}°, Y={APRILTAG_RPY_OFFSET_YAW:+7.2f}°")
-        print(f"  最终参考值: R={comp_roll_deg:+7.2f}°, P={comp_pitch_deg:+7.2f}°, Y={comp_yaw_deg:+7.2f}°")
-        
-        # 计算垂直按压时的夹爪姿态（用于显示）⚠️ 使用补偿后的值
-        gripper_roll_comp = -compensated_rpy_rad[0]
-        gripper_pitch_comp = compensated_rpy_rad[1]
-        gripper_yaw_comp = compensated_rpy_rad[2]
-        gripper_roll_deg, gripper_pitch_deg, gripper_yaw_deg = np.degrees([gripper_roll_comp, gripper_pitch_comp, gripper_yaw_comp])
-        
-        print(f"\n  垂直按压时夹爪姿态（perpendicular模式）:")
-        print(f"    R={gripper_roll_deg:+7.2f}° (=-补偿后Tag_Roll)")
-        print(f"    P={gripper_pitch_deg:+7.2f}° (=补偿后Tag_Pitch)")
-        print(f"    Y={gripper_yaw_deg:+7.2f}° (=补偿后Tag_Yaw)")
-        print(f"\n  ✓ 面板姿态已固化为基座系绝对姿态")
-        print(f"  ✓ 后续运动将保持此姿态，无需AprilTag实时检测")
-        print(f"  ✓✓✓ 全局变量已更新，四种动作将使用补偿后的姿态")
-        print(f"      APRILTAG_BASE_ROLL  = {np.degrees(APRILTAG_BASE_ROLL):+7.2f}°")
-        print(f"      APRILTAG_BASE_PITCH = {np.degrees(APRILTAG_BASE_PITCH):+7.2f}°")
-        print(f"      APRILTAG_BASE_YAW   = {np.degrees(APRILTAG_BASE_YAW):+7.2f}°")
-        print("="*70)
-        
-        return True
-        
-    except Exception as e:
-        print(f"✗ 设置AprilTag参考姿态失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def get_tcp_offset_for_button(button_type):
-    """
-    根据按钮类型获取对应的TCP偏移
+    # 直接构建面板在基座系的旋转矩阵
+    roll, pitch, yaw = base_rpy_rad
+    R_base_panel = euler_to_rotation_matrix(roll, pitch, yaw)
     
-    参数：
-    - button_type: str - 'toggle', 'plugin', 'push', 'knob'
+    # 保存参考姿态
+    APRILTAG_REFERENCE_POSE_BASE = R_base_panel.copy()
     
-    返回：
-    - np.array([x, y, z]) - 夹爪坐标系的偏移（米）
+    roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
+    print("\n" + "="*70)
+    print("✓✓✓ 已记录面板参考姿态（基座系绝对姿态）")
+    print("="*70)
+    print(f"  AprilTag姿态（基座系）: R={roll_deg:.2f}°, P={pitch_deg:.2f}°, Y={yaw_deg:.2f}°")
+    print(f"  面板姿态已固化为基座系绝对姿态")
+    print(f"  后续运动将保持此姿态，无需AprilTag实时检测")
+    print("="*70)
     
-    说明：
-    - 每种按钮有独立的TCP配置
-    - 自动应用全局偏移（用于快速微调）
-    
-    坐标系：
-    - X：向前（手指闭合方向）
-    - Y：向左
-    - Z：向上
-    """
-    tcp_map = {
-        'toggle': TCP_OFFSET_TOGGLE,
-        'plugin': TCP_OFFSET_PLUGIN,
-        'push': TCP_OFFSET_PUSH,
-        'knob': TCP_OFFSET_KNOB
-    }
-    
-    # 获取基础偏移
-    base_offset = np.array(tcp_map.get(button_type, TCP_OFFSET_PUSH))
-    
-    # 应用全局偏移（用于快速微调）
-    base_offset[0] += TCP_GLOBAL_OFFSET_X
-    base_offset[1] += TCP_GLOBAL_OFFSET_Y
-    base_offset[2] += TCP_GLOBAL_OFFSET_Z
-    
-    return base_offset
+    return True
 
 
 def rotation_matrix_to_quaternion(R):
