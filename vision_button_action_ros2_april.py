@@ -42,7 +42,6 @@ class VisionButtonActionNode(Node):
         self.declare_parameter("button_type_topic", "/button_type")
         self.declare_parameter("button_normal_topic", "/button_normal_base")  # 🔧 改为基座系
         self.declare_parameter("target_marker_topic", "/target_button_base")
-        self.declare_parameter("tcp_offset_local", [-0.051, 0.007, 0.080])
         self.declare_parameter("process_rate", 10.0)
         self.declare_parameter("rpy_sample_count", 10)  # AprilTag RPY采样数量
 
@@ -50,8 +49,6 @@ class VisionButtonActionNode(Node):
         self.button_type_topic = self.get_parameter("button_type_topic").get_parameter_value().string_value
         self.normal_topic = self.get_parameter("button_normal_topic").get_parameter_value().string_value
         self.marker_topic = self.get_parameter("target_marker_topic").get_parameter_value().string_value
-        tcp_offset_param = self.get_parameter("tcp_offset_local").get_parameter_value().double_array_value
-        self.tcp_offset_local = np.array(tcp_offset_param if tcp_offset_param else [-0.018, 0.007, 0.063])
         process_rate = self.get_parameter("process_rate").get_parameter_value().double_value
         self.process_period = 1.0 / max(float(process_rate) if process_rate else 10.0, 1.0)
         self.rpy_sample_count = int(self.get_parameter("rpy_sample_count").get_parameter_value().integer_value)
@@ -116,7 +113,7 @@ class VisionButtonActionNode(Node):
         self.get_logger().info(f"    - 按钮类型: {self.button_type_topic}")
         self.get_logger().info(f"    - 面板法向: {self.normal_topic} (HOME位姿后启动)")
         self.get_logger().info(f"  配置参数:")
-        self.get_logger().info(f"    - TCP偏移 (夹爪系): {self.tcp_offset_local}")
+        self.get_logger().info(f"    - TCP偏移: 由button_actions.py自动管理")
         self.get_logger().info(f"    - AprilTag采样数: {self.rpy_sample_count}")
         self.get_logger().info(f"    - 处理频率: {1.0/self.process_period:.1f}Hz")
         self.get_logger().info("="*70)
@@ -325,26 +322,20 @@ class VisionButtonActionNode(Node):
             self.get_logger().error("="*70)
             return False
 
-        current_joints = button_actions.get_current_joints()
-        
-        # ✅ 根据按钮类型动态获取TCP偏移
-        tcp_offset_local = button_actions.get_tcp_offset_for_button(button_type)
-        
         self.get_logger().info("="*70)
         self.get_logger().info(f"📌 执行按钮动作：{button_type.upper()}")
         self.get_logger().info(f"  按钮位置（基座系）: ({button_center_base[0]:.4f}, {button_center_base[1]:.4f}, {button_center_base[2]:.4f}) m")
-        self.get_logger().info(f"  TCP偏移（夹爪系）: ({tcp_offset_local[0]:.4f}, {tcp_offset_local[1]:.4f}, {tcp_offset_local[2]:.4f}) m")
         
-        # 🔧 应用TCP偏移
-        button_base_h = np.array([button_center_base[0], button_center_base[1], button_center_base[2], 1.0])
-        target_base = self._apply_tcp_offset(button_base_h, current_joints, tcp_offset_local)
-        self._publish_target_marker(target_base[:3])
-
-        button_actions.TARGET_X = float(target_base[0])
-        button_actions.TARGET_Y = float(target_base[1])
-        button_actions.TARGET_Z = float(target_base[2])
+        # 🔧 新逻辑：直接将按钮位置设置为TARGET，TCP偏移由button_actions.py内部处理
+        # button_actions.py 的 create_aligned_target_pose() 会自动应用对应按钮类型的TCP偏移
+        button_actions.TARGET_X = float(button_center_base[0])
+        button_actions.TARGET_Y = float(button_center_base[1])
+        button_actions.TARGET_Z = float(button_center_base[2])
+        
+        self._publish_target_marker(button_center_base)
 
         self.get_logger().info(f"  目标位置（基座系）: ({button_actions.TARGET_X:.4f}, {button_actions.TARGET_Y:.4f}, {button_actions.TARGET_Z:.4f}) m")
+        self.get_logger().info(f"  💡 TCP偏移将由button_actions.py自动应用")
         self.get_logger().info("="*70)
 
         # 姿态约束由APRILTAG_REFERENCE_POSE_BASE全局变量提供
@@ -397,70 +388,6 @@ class VisionButtonActionNode(Node):
                 self.get_logger().warn("⚠️  MoveIt2 初始化失败，将使用SDK模式")
 
         return True
-
-    def _apply_tcp_offset(self, button_base: np.ndarray, current_joints, tcp_offset_local: np.ndarray) -> np.ndarray:
-        """
-        应用TCP偏移，将按钮检测位置转换为夹爪目标位置
-        
-        参数：
-        - button_base: 按钮在基座系的位置 [x, y, z, 1]
-        - current_joints: 当前关节角度
-        - tcp_offset_local: TCP偏移（夹爪坐标系）
-        
-        返回：
-        - target_base: 夹爪目标位置 [x, y, z, 1]
-        """
-        # 获取末端姿态
-        base_T_link6 = self.piper_arm.forward_kinematics(current_joints)
-        R_base_link6 = base_T_link6[:3, :3]
-
-        # 将夹爪坐标系的偏移转换到基座坐标系
-        offset_base = R_base_link6 @ np.array(tcp_offset_local)
-
-        # 应用偏移：目标 = 按钮 - 偏移
-        target_base = button_base.copy()
-        target_base[:3] = button_base[:3] - offset_base
-
-        # ===== 详细调试输出 =====
-        self.get_logger().info("【TCP偏移计算详情】")
-        self.get_logger().info(f"  1. 按钮检测位置（基座系）:")
-        self.get_logger().info(f"     X={button_base[0]:+.4f}m, Y={button_base[1]:+.4f}m, Z={button_base[2]:+.4f}m")
-        
-        self.get_logger().info(f"  2. TCP偏移（夹爪系）:")
-        self.get_logger().info(f"     X={tcp_offset_local[0]:+.4f}m, Y={tcp_offset_local[1]:+.4f}m, Z={tcp_offset_local[2]:+.4f}m")
-        
-        # 计算当前末端姿态
-        current_rpy = self._rotation_matrix_to_rpy(R_base_link6)
-        self.get_logger().info(f"  3. 当前末端姿态（Roll-Pitch-Yaw）:")
-        self.get_logger().info(f"     R={np.degrees(current_rpy[0]):+7.2f}°, P={np.degrees(current_rpy[1]):+7.2f}°, Y={np.degrees(current_rpy[2]):+7.2f}°")
-        
-        self.get_logger().info(f"  4. TCP偏移转换到基座系:")
-        self.get_logger().info(f"     ΔX={offset_base[0]:+.4f}m, ΔY={offset_base[1]:+.4f}m, ΔZ={offset_base[2]:+.4f}m")
-        
-        self.get_logger().info(f"  5. 最终目标位置（基座系）:")
-        self.get_logger().info(f"     X={target_base[0]:+.4f}m, Y={target_base[1]:+.4f}m, Z={target_base[2]:+.4f}m")
-        
-        # 计算实际修正量
-        correction = target_base[:3] - button_base[:3]
-        correction_norm = np.linalg.norm(correction)
-        self.get_logger().info(f"  6. 位置修正量（|ΔP|={correction_norm*1000:.1f}mm）:")
-        self.get_logger().info(f"     ΔX={correction[0]:+.4f}m, ΔY={correction[1]:+.4f}m, ΔZ={correction[2]:+.4f}m")
-
-        return target_base
-
-    def _rotation_matrix_to_rpy(self, R):
-        """旋转矩阵转RPY（用于Debug）"""
-        sy = np.sqrt(R[0, 0]**2 + R[1, 0]**2)
-        singular = sy < 1e-6
-        if not singular:
-            roll = np.arctan2(R[2, 1], R[2, 2])
-            pitch = np.arctan2(-R[2, 0], sy)
-            yaw = np.arctan2(R[1, 0], R[0, 0])
-        else:
-            roll = np.arctan2(-R[1, 2], R[1, 1])
-            pitch = np.arctan2(-R[2, 0], sy)
-            yaw = 0
-        return np.array([roll, pitch, yaw])
 
     def _publish_target_marker(self, target_xyz) -> None:
         marker = Marker()

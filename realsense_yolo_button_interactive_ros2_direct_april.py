@@ -33,6 +33,7 @@ DETECTION_SKIP_FRAMES = 0  # 🔧 异步模式：每帧都放入队列，检测�
 YOLO_CONF_THRESHOLD = 0.4  # 🔧 降低阈值提高召回率（小图像需要）
 YOLO_SCALE_FACTOR = 0.6    # 🔧 🚀 极限模式：640x480 → 64x48 (100倍加速!)
 UI_REFRESH_RATE = 30       # 🔧 UI刷新率（Hz），独立于检测频率
+ENABLE_UNDISTORTION = False  # 🔧 ⚠️ 禁用去畸变（相机畸变系数为0时必须关闭）
 
 # ========================================
 # 全局变量
@@ -279,52 +280,76 @@ def get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=5):
     return None
 
 
-def get_bbox_depth_cloud(depth_data, x1, y1, x2, y2, depth_intrin, min_valid_ratio=0.1):
+def get_bbox_depth_cloud(depth_data, x1, y1, x2, y2, depth_intrin, min_valid_ratio=0.05, sample_step=3):
     """
-    从检测框内提取点云数据，计算平均3D坐标
+    🔥 改进版：从检测框内提取点云数据（标准CV方法）
+    
+    核心改进：
+    1. XY坐标使用检测框几何中心（避免偏移）
+    2. Z坐标使用中位数深度（鲁棒抗噪）
+    3. 向量化操作（高性能）
+    
+    坐标计算方式：
+    - X = (bbox_center_x - ppx) * Z / fx  ← 基于检测框中心
+    - Y = (bbox_center_y - ppy) * Z / fy  ← 基于检测框中心
+    - Z = median(depth[bbox内有效点])     ← 深度中位数
     
     Args:
-        depth_data: 深度图
+        depth_data: 深度图 (H×W, uint16, mm)
         x1, y1, x2, y2: 检测框坐标
         depth_intrin: 深度相机内参
-        min_valid_ratio: 最小有效点比例（默认10%）
+        min_valid_ratio: 最小有效点比例（默认5%，更宽松）
+        sample_step: 采样步长（默认3，平衡性能和精度）
     
     Returns:
-        center_3d: [x, y, z] (平均值) 或 None
+        center_3d: [x, y, z] (XY来自bbox中心, Z为中位数) 或 None
         valid_ratio: 有效点比例
     """
-    # 裁剪检测框区域
-    bbox_depth = depth_data[y1:y2, x1:x2]
+    # 1️⃣ 裁剪并采样检测框区域（降低计算量）
+    roi_depth = depth_data[y1:y2:sample_step, x1:x2:sample_step].copy()
     
-    # 统计有效点
-    total_pixels = bbox_depth.size
-    valid_mask = bbox_depth > 0
+    # 2️⃣ 生成像素坐标网格（向量化操作）
+    u = np.arange(x1, x2, sample_step)
+    v = np.arange(y1, y2, sample_step)
+    u_grid, v_grid = np.meshgrid(u, v)
+    
+    # 3️⃣ 深度转米 + 反投影（针孔相机模型）
+    z = roi_depth.astype(np.float32) / 1000.0  # mm → m
+    x = (u_grid - depth_intrin.ppx) * z / depth_intrin.fx
+    y = (v_grid - depth_intrin.ppy) * z / depth_intrin.fy
+    
+    # 4️⃣ 过滤无效点（深度范围：0.15~1.5m）
+    valid_mask = (z > 0.15) & (z < 1.5)
     valid_count = np.sum(valid_mask)
+    total_pixels = roi_depth.size
     valid_ratio = valid_count / total_pixels if total_pixels > 0 else 0
     
-    # 如果有效点太少，返回None
+    # 🔍 调试信息（仅在失败时打印）
+    if valid_count == 0:
+        global_valid = np.count_nonzero(depth_data > 0)
+        print(f"[深度提取·ROI] ⚠️  检测框[{x1},{y1}→{x2},{y2}] 完全无效! "
+              f"全图有效像素:{global_valid}/{depth_data.size}")
+    
+    # 5️⃣ 有效点太少，返回None
     if valid_ratio < min_valid_ratio:
         return None, valid_ratio
     
-    # 提取有效深度点的像素坐标和深度值
-    valid_y, valid_x = np.where(valid_mask)
-    valid_depths = bbox_depth[valid_mask] * 0.001  # mm -> m
+    # 6️⃣ 提取有效点云
+    x_valid = x[valid_mask]
+    y_valid = y[valid_mask]
+    z_valid = z[valid_mask]
     
-    # 计算每个有效点的3D坐标（相对检测框）
-    valid_x_global = valid_x + x1  # 转换到全局坐标
-    valid_y_global = valid_y + y1
+    # 7️⃣ XY使用检测框中心，Z使用深度中位数（标准CV方法）
+    # 🔥 修正：XY应该来自bbox几何中心，而不是所有像素的统计中位数
+    cx = (x1 + x2) // 2  # 检测框中心X
+    cy = (y1 + y2) // 2  # 检测框中心Y
+    z_center = np.median(z_valid)  # 深度使用中位数（鲁棒抗噪）
     
-    # 反投影到3D空间
-    points_3d = []
-    for px, py, depth in zip(valid_x_global, valid_y_global, valid_depths):
-        x_3d = (px - depth_intrin.ppx) * depth / depth_intrin.fx
-        y_3d = (py - depth_intrin.ppy) * depth / depth_intrin.fy
-        z_3d = depth
-        points_3d.append([x_3d, y_3d, z_3d])
+    # 根据针孔相机模型计算真实3D坐标
+    x_center = (cx - depth_intrin.ppx) * z_center / depth_intrin.fx
+    y_center = (cy - depth_intrin.ppy) * z_center / depth_intrin.fy
     
-    # 计算平均3D坐标（使用中位数更鲁棒）
-    points_3d = np.array(points_3d)
-    center_3d = np.median(points_3d, axis=0)  # 使用中位数而不是平均值
+    center_3d = np.array([x_center, y_center, z_center])
     
     return center_3d, valid_ratio
 
@@ -690,9 +715,41 @@ def main(args=None):
     # AprilTag检测使用彩色相机内参
     camera_params = [color_intrin_obj.fx, color_intrin_obj.fy, color_intrin_obj.ppx, color_intrin_obj.ppy]
     
+    # 🔧 提取真实的畸变系数（之前硬编码为0导致精度问题！）
+    color_distortion = np.array(color_intrin_obj.coeffs, dtype=np.float64)
+    
+    # 🔍 检查畸变系数是否有效（全为0表示未标定）
+    distortion_valid = np.any(np.abs(color_distortion) > 1e-6)
+    if not distortion_valid:
+        node.get_logger().warn(f"⚠️  相机畸变系数全为0，可能未进行标定！")
+        node.get_logger().warn(f"⚠️  将禁用图像去畸变功能，可能影响边缘区域精度")
+        # 局部禁用去畸变（覆盖全局设置）
+        ENABLE_UNDISTORTION = False
+    else:
+        # 使用全局设置
+        ENABLE_UNDISTORTION = ENABLE_UNDISTORTION
+    
+    # 输出去畸变状态
+    if ENABLE_UNDISTORTION:
+        node.get_logger().info("✓ 图像去畸变已启用 - 修复精度问题")
+    else:
+        node.get_logger().warn("⚠️  图像去畸变已禁用 - 可能影响精度")
+    
+    # 构建OpenCV格式的相机矩阵
+    color_camera_matrix = np.array([
+        [color_intrin_obj.fx, 0, color_intrin_obj.ppx],
+        [0, color_intrin_obj.fy, color_intrin_obj.ppy],
+        [0, 0, 1]
+    ], dtype=np.float64)
+    
     node.get_logger().info(f"✓ 相机内参已加载")
     node.get_logger().info(f"  彩色相机: fx={color_intrin_obj.fx:.1f}, fy={color_intrin_obj.fy:.1f}, ppx={color_intrin_obj.ppx:.1f}, ppy={color_intrin_obj.ppy:.1f}")
     node.get_logger().info(f"  深度相机: fx={depth_intrin_obj.fx:.1f}, fy={depth_intrin_obj.fy:.1f}, ppx={depth_intrin_obj.ppx:.1f}, ppy={depth_intrin_obj.ppy:.1f}")
+    node.get_logger().info(f"  🔧 彩色相机畸变系数: {color_distortion}")
+    if distortion_valid:
+        node.get_logger().info(f"  ✅ 畸变系数有效，去畸变{'已启用' if ENABLE_UNDISTORTION else '已禁用'}")
+    else:
+        node.get_logger().warn(f"  ❌ 畸变系数无效（全为0），去畸变已自动禁用")
     node.get_logger().info(f"  ⚠️  注意：对齐后的深度图将使用彩色相机内参进行3D反投影")
     
     # 手眼标定参数（从piper_arm.py加载）
@@ -703,10 +760,11 @@ def main(args=None):
         link6_T_camera[:3, :3] = quaternion_to_rotation_matrix(node.piper_arm.link6_q_camera)
         link6_T_camera[:3, 3] = node.piper_arm.link6_t_camera
         
-        # 打印手眼标定参数（调试用）
+        # 打印手眼标定参数（调试用）- 使用高精度格式
         node.get_logger().info(f"✓ 手眼标定矩阵已加载")
-        node.get_logger().info(f"  link6_t_camera (平移): {node.piper_arm.link6_t_camera}")
-        node.get_logger().info(f"  link6_q_camera (四元数): {node.piper_arm.link6_q_camera}")
+        node.get_logger().info(f"  link6_t_camera (平移): [{node.piper_arm.link6_t_camera[0]:.10f}, {node.piper_arm.link6_t_camera[1]:.10f}, {node.piper_arm.link6_t_camera[2]:.10f}]")
+        q = node.piper_arm.link6_q_camera
+        node.get_logger().info(f"  link6_q_camera (四元数): [{q[0]:.10f}, {q[1]:.10f}, {q[2]:.10f}, {q[3]:.10f}]")
     else:
         link6_T_camera = np.eye(4)
         link6_T_camera[2, 3] = 0.05
@@ -758,9 +816,27 @@ def main(args=None):
             depth_data = np.asanyarray(aligned_depth.get_data())
             color_data = np.asanyarray(color_frame.get_data())
             
+            # 🔧 图像去畸变（修复"补偿第二次就不能用"的问题）
+            if ENABLE_UNDISTORTION:
+                color_data = cv2.undistort(color_data, color_camera_matrix, color_distortion)
+            
             # 🔧 关键修复：对齐后的深度图应使用彩色相机的内参！
             # 因为 align.process() 已经把深度图重投影到彩色相机视角
             depth_intrin = color_frame.profile.as_video_stream_profile().intrinsics
+            
+            # 🔍 调试：检查深度图状态（每30帧打印一次）
+            if frame_counter % 30 == 0:
+                valid_depth_pixels = np.count_nonzero(depth_data > 0)
+                total_pixels = depth_data.size
+                valid_ratio = valid_depth_pixels / total_pixels * 100
+                depth_min = np.min(depth_data[depth_data > 0]) if valid_depth_pixels > 0 else 0
+                depth_max = np.max(depth_data)
+                depth_mean = np.mean(depth_data[depth_data > 0]) if valid_depth_pixels > 0 else 0
+                
+                node.get_logger().info(
+                    f"[深度图诊断] 有效像素: {valid_depth_pixels}/{total_pixels} ({valid_ratio:.1f}%), "
+                    f"深度范围: {depth_min}-{depth_max}mm, 平均: {depth_mean:.0f}mm"
+                )
             
             current_depth_data = depth_data
             current_color_data = color_data
@@ -798,16 +874,21 @@ def main(args=None):
                 x2_full = int(x2 / YOLO_SCALE_FACTOR)
                 y2_full = int(y2 / YOLO_SCALE_FACTOR)
                 
-                # 🔧 方法1：使用检测框内所有点云数据（首选）
+                # � 改进版：使用ROI点云方法提取3D坐标
+                # 参数：sample_step=3 平衡性能和精度，min_valid_ratio=0.05 更宽松
                 center_3d, valid_ratio = get_bbox_depth_cloud(
                     depth_data, x1_full, y1_full, x2_full, y2_full, 
-                    depth_intrin, min_valid_ratio=0.05  # 至少5%的像素有深度
+                    depth_intrin, 
+                    min_valid_ratio=0.05,  # 至少5%的像素有深度（更宽松）
+                    sample_step=3          # 每3个像素采样1次（平衡速度）
                 )
                 
-                # 🔧 方法2：如果点云方法失败，尝试中心窗口法
+                # 🔧 备用方法：如果ROI点云失败，尝试中心窗口法
                 if center_3d is None:
                     cx, cy = int((x1_full + x2_full) / 2), int((y1_full + y2_full) / 2)
-                    center_3d = get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=5)
+                    center_3d = get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=7)
+                    if center_3d is not None:
+                        print(f"[深度提取·ROI] ℹ️  使用备用方法（中心窗口7×7）获取深度")
                 
                 all_detections.append((
                     x1_full, y1_full, x2_full, y2_full,
@@ -857,13 +938,8 @@ def main(args=None):
                     tvec = det.pose_t
                     
                     # 🔥 修复：使用彩色相机内参矩阵（AprilTag检测在彩色图上）
-                    camera_matrix = np.array([
-                        [color_intrin_obj.fx, 0, color_intrin_obj.ppx],
-                        [0, color_intrin_obj.fy, color_intrin_obj.ppy],
-                        [0, 0, 1]
-                    ], dtype=np.float64)
-                    
-                    dist_coeffs = np.zeros(5, dtype=np.float64)
+                    camera_matrix = color_camera_matrix  # 使用全局定义的矩阵
+                    dist_coeffs = color_distortion  # 🔧 使用真实畸变系数！
                     
                     imgpts, _ = cv2.projectPoints(axis_3d, rvec, tvec, camera_matrix, dist_coeffs)
                     imgpts = imgpts.astype(int)

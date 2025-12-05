@@ -96,13 +96,13 @@ factor = 1000 * 180 / PI
 #
 # 🏷️ AprilTag位置（仅用于姿态参考，不是目标位置！）
 APRILTAG_BASE_X = 0.413      # Tag中心X坐标 (米)
-APRILTAG_BASE_Y = 0.042      # Tag中心Y坐标 (米)
-APRILTAG_BASE_Z = 0.024      # Tag中心Z坐标 (米)
+APRILTAG_BASE_Y = 0.00      # Tag中心Y坐标 (米)
+APRILTAG_BASE_Z = 0.00      # Tag中心Z坐标 (米)
 
 # 🏷️ AprilTag姿态（用于计算夹爪的正确姿态）
 APRILTAG_BASE_ROLL = -180 * PI / 180   # Tag的Roll (弧度) ⚠️ 这是Tag本身的姿态！
 APRILTAG_BASE_PITCH = 3.4 * PI / 180     # Tag的Pitch (弧度)
-APRILTAG_BASE_YAW = 150 * PI / 180     # Tag的Yaw (弧度)
+APRILTAG_BASE_YAW = 180 * PI / 180     # Tag的Yaw (弧度)
 
 APRILTAG_REFERENCE_POSE_BASE = None  # 面板在基座系的目标姿态（3x3旋转矩阵，从上述RPY计算得到）
 APRILTAG_ALIGNMENT_TOLERANCE = 5.0 * PI / 180  # 姿态容差：5度
@@ -123,9 +123,9 @@ APRILTAG_ALIGNMENT_TOLERANCE = 5.0 * PI / 180  # 姿态容差：5度
 #    观察到：实际Yaw=155°, 目标Yaw=150°, 偏差=+5°
 #    修正：APRILTAG_RPY_OFFSET_YAW = -5.0
 #
-APRILTAG_RPY_OFFSET_ROLL = 0.0   # Roll补偿（度）⚠️ 正值=顺时针修正
-APRILTAG_RPY_OFFSET_PITCH = 0.0  # Pitch补偿（度）⚠️ 正值=抬头修正
-APRILTAG_RPY_OFFSET_YAW = 8    # Yaw补偿（度）⚠️ 正值=逆时针修正（常用）
+APRILTAG_RPY_OFFSET_ROLL = -8   # Roll补偿（度）⚠️ 正值=顺时针修正
+APRILTAG_RPY_OFFSET_PITCH = -10  # Pitch补偿（度）⚠️ 正值=抬头修正
+APRILTAG_RPY_OFFSET_YAW = 2    # Yaw补偿（度）⚠️ 正值=逆时针修正（常用）
 
 # ========================================
 # 新增：每种按钮的独立TCP偏移
@@ -149,10 +149,15 @@ APRILTAG_RPY_OFFSET_YAW = 8    # Yaw补偿（度）⚠️ 正值=逆时针修正
 #    - Knob（旋转）：可能需要更深插入，调整Z值
 #    - Plugin（插拔）：可能需要更精确对准，微调X/Y
 #
-TCP_OFFSET_TOGGLE = [-0.051, 0.007, 0.080]   # Toggle拨动开关
-TCP_OFFSET_PLUGIN = [-0.051, 0.007, 0.080]   # Plugin插拔连接器
-TCP_OFFSET_PUSH = [0.075, 0.019, 0.11]     # Push按压按钮
-TCP_OFFSET_KNOB = [-0.051, 0.007, 0.12]     # Knob旋转旋钮
+# TCP_OFFSET_TOGGLE = [-0.051, 0.007, 0.080]   # Toggle拨动开关
+# TCP_OFFSET_PLUGIN = [-0.051, 0.007, 0.080]   # Plugin插拔连接器
+# TCP_OFFSET_PUSH = [0.025, -0.068, 0.125]     # Push按压按钮
+# TCP_OFFSET_KNOB = [0.015, -0.045, 0.12]     # Knob旋转旋钮
+
+TCP_OFFSET_TOGGLE = [0,0,0]   # Toggle拨动开关
+TCP_OFFSET_PLUGIN = [0,0,-0.15]   # Plugin插拔连接器
+TCP_OFFSET_PUSH = [0.013,0.063,-0.127]     # Push按压按钮
+TCP_OFFSET_KNOB = [0.013,0.063,-0.15]     # Knob旋转旋钮  +  hou   +zuo  +xia
 
 # 🔧 快速调试开关：统一调整所有TCP（全局微调）
 # 💡 用途：快速测试偏移方向，找到问题后再调整具体按钮的TCP
@@ -170,19 +175,26 @@ TCP_GLOBAL_OFFSET_Z = 0.0  # 全局Z偏移（米）⚠️ 正值向上，负值�
 #     65.0 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
 #     0.94 * PI / 180     # J6: 0.94°
 # # ]
-# [INFO] [1764756859.183727907] [piper_status_reader]:   J1: -2.35°
-# [INFO] [1764756859.204531997] [piper_status_reader]:   J2: 54.64°
-# [INFO] [1764756859.213189347] [piper_status_reader]:   J3: -52.53°
-# [INFO] [1764756859.242250152] [piper_status_reader]:   J4: -2.95°
-# [INFO] [1764756859.267107434] [piper_status_reader]:   J5: 51.39°
-# [INFO] [1764756859.293310719] [piper_status_reader]:   J6: 7.68°
+# [INFO] [1764824515.578004544] [piper_status_reader]:   J1: -2.50°
+# [INFO] [1764824515.580301892] [piper_status_reader]:   J2: 91.96°
+# [INFO] [1764824515.583516281] [piper_status_reader]:   J3: -81.42°
+# [INFO] [1764824515.586704452] [piper_status_reader]:   J4: 2.25°
+# [INFO] [1764824515.589387963] [piper_status_reader]:   J5: 64.09°
+# [INFO] [1764824515.591650302] [piper_status_reader]:   J6: 0.97°
+
+# [INFO] [1764926421.641024545] [piper_status_reader]:   J1: -1.08°
+# [INFO] [1764926421.641177540] [piper_status_reader]:   J2: 89.47°
+# [INFO] [1764926421.641336642] [piper_status_reader]:   J3: -59.96°
+# [INFO] [1764926421.641488584] [piper_status_reader]:   J4: 0.00°
+# [INFO] [1764926421.641638102] [piper_status_reader]:   J5: 42.93°
+# [INFO] [1764926421.641786514] [piper_status_reader]:   J6: -4.50°
 HOME_JOINTS = [
-    -2.35 * PI / 180,   # J1: -2.35°
-    54.64 * PI / 180,   # J2: 54.64°
-    -52.53 * PI / 180,  # J3: -52.53°
-    -2.95 * PI / 180,   # J4: -2.95°
-    51.39 * PI / 180,   # J5: 51.39°
-    7.68 * PI / 180     # J6: 7.68°
+    -1.08 * PI / 180,   # J1: -4.68°
+   89.47 * PI / 180,   # J2: 86.06°
+    -59.96 * PI / 180,  # J3: -86.16°
+    0 * PI / 180,    # J4: 5.27°
+   42.93 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
+    -4.50 * PI / 180     # J6: 0.94°
 ]
 
 # HOME_JOINTS = [
@@ -207,9 +219,16 @@ USE_HOME_POSITION = True
 #    姿态由 APRILTAG_BASE_ROLL/PITCH/YAW 自动计算（通过get_gripper_approach_rotation）
 #
 # 位置 (单位：米) - 实际按钮/旋钮的3D坐标
-TARGET_X = 0.40  # X坐标 (降低以保证可达性)
-TARGET_Y = 0.20  # Y坐标
-TARGET_Z = 0.13  # Z坐标 (使用末端朝下姿态可达更高位置)
+TARGET_X = 0.4  # X坐标 (降低以保证可达性)
+TARGET_Y = 0.19 # Y坐标
+TARGET_Z = 0.0  # Z坐标 (使用末端朝下姿态可达更高位置)
+
+# XYZ: (+0.560, -0.104, -0.038) m
+# TARGET_X = +0.560  # X坐标 (降低以保证可达性)
+# TARGET_Y = -0.104  # Y坐标 
+# TARGET_Z = -0.038  # Z坐标 (使用末端朝下姿态可达更高位置)
+
+
 
 # 新增：完整位姿矩阵（包含法向量对齐）
 # 当 vision_button_action_ros2 提供时，将使用此矩阵代替 TARGET_X/Y/Z + TARGET_ROLL/PITCH/YAW
@@ -232,7 +251,7 @@ USE_6D_POSE = True   # True=使用6D位姿(含姿态), False=仅使用位置(末
 # 这是正常现象，不影响按钮操作的执行。如果需要更高精度，请考虑使用MoveIt的笛卡尔路径规划。
 
 # === 动作类型选择 ===
-ACTION_TYPE = 'knob'  # 'toggle'/'plugin'/'push'/'knob'
+ACTION_TYPE = 'push'  # 'toggle'/'plugin'/'push'/'knob'
 
 # === 控制模式 ===
 USE_MOVEIT = True  # ROS2启动脚本: 启用MoveIt2粗定位
@@ -244,7 +263,7 @@ TEST_MODE_FROM_HOME = False  # True=从HOME位姿直接沿Z轴执行, False=使�
 ENABLE_CARTESIAN_FINE_TUNE = False    # True=MoveIt后允许笛卡尔微调, False=严格使用MoveIt结果
 CARTESIAN_FINE_TUNE_THRESHOLD = 0.008  # 超过该距离(米)才触发微调
 CARTESIAN_ORIENTATION_INTERPOLATION = True  # ✨ True=笛卡尔精调时同时插值姿态(SLERP)，避免突然旋转
-DEBUG_IK_SOLVER = False               # True=打印每个IK求解细节
+DEBUG_IK_SOLVER = True                # True=打印每个IK求解细节（🔍 调试IK问题时开启）
 AUTO_FINE_TUNE_ON_FAILURE = True      # True=MoveIt多次尝试后仍超差时自动触发笛卡尔精调
 AUTO_FINE_TUNE_SPEED = 12             # 自动精调的默认SDK速度
 
@@ -282,8 +301,8 @@ CARTESIAN_INTERPOLATION_PROFILE = 'cubic'  # 插值速度曲线: 'linear' 或 'c
 CARTESIAN_HIGH_ACCEL_PROFILE = 'impulse'   # 高加速度场景使用的自定义曲线
 
 # === Knob (旋转旋钮) 配置 ===
-KNOB_GRIPPER_OPEN = 45000       # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
-KNOB_INSERT_DEPTH = 0.005        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
+KNOB_GRIPPER_OPEN = 30000       # 张开宽度 (单位: 0.001mm, 范围: 0~70000, 即0~70mm)
+KNOB_INSERT_DEPTH = 0.018        # 插入深度 (单位: 米, 范围: -0.1~0.1, 建议: 0.005~0.02)
 KNOB_GRIPPER_HOLD = 8000       # 闭合夹持宽度 (单位: 0.001mm, 范围: 0~70000, 建议: 15000~35000)
 KNOB_ROTATION_ANGLE = 45        # 旋转角度 (单位: 度, 范围: -360~360, 建议: 30~180)
 KNOB_ROTATION_DIRECTION = 'cw'  # 旋转方向: 'cw'=顺时针(右旋), 'ccw'=逆时针(左旋)
@@ -777,6 +796,47 @@ def plot_trajectory_comparison(planned_xyz, executed_xyz, planned_times, execute
 # ========================================
 # 控制函数
 # ========================================
+
+def is_near_singularity(joints):
+    """
+    检测关节角度是否接近运动学奇异点
+    
+    参数:
+        joints: 6个关节角度（弧度）
+    
+    返回:
+        True=接近奇异点, False=安全区域
+    
+    奇异点区域定义：
+    1. J2>110° 且 J3<-70° (肩部奇异点)
+    2. |J5| > 65° (腕部奇异点，接近±70°限位)
+    3. J2+J3接近0° (伸直奇异点)
+    """
+    j1_deg = joints[0] * 180 / PI
+    j2_deg = joints[1] * 180 / PI
+    j3_deg = joints[2] * 180 / PI
+    j4_deg = joints[3] * 180 / PI
+    j5_deg = joints[4] * 180 / PI
+    j6_deg = joints[5] * 180 / PI
+    
+    # 危险区域1: J2过大且J3过负（肩部奇异点）
+    if j2_deg > 110 and j3_deg < -70:
+        print(f"  ⚠️  奇异点检测: J2={j2_deg:.1f}° > 110° 且 J3={j3_deg:.1f}° < -70°")
+        return True
+    
+    # 危险区域2: J5接近限位（腕部奇异点）
+    if abs(j5_deg) > 65:
+        print(f"  ⚠️  奇异点检测: J5={j5_deg:.1f}° 接近限位±70°")
+        return True
+    
+    # 危险区域3: J2+J3接近0°（伸直奇异点）
+    j2_j3_sum = j2_deg + j3_deg
+    if abs(j2_j3_sum) < 10:
+        print(f"  ⚠️  奇异点检测: J2+J3={j2_j3_sum:.1f}° 接近伸直")
+        return True
+    
+    return False
+
 
 def update_ee_trail(joints):
     """
@@ -1636,7 +1696,7 @@ def rotation_matrix_to_quaternion(R):
     return np.array([x, y, z, w])
 
 
-def create_aligned_target_pose(button_xyz_base, gripper_rotation=None):
+def create_aligned_target_pose(button_xyz_base, gripper_rotation=None, tcp_offset=None):
     """
     根据按钮位置和夹爪目标姿态构建目标位姿
     
@@ -1649,6 +1709,12 @@ def create_aligned_target_pose(button_xyz_base, gripper_rotation=None):
         gripper_rotation: 夹爪的目标姿态 (3x3旋转矩阵)
             - None: 使用默认姿态（末端朝下）
             - 推荐使用 get_gripper_approach_rotation() 获取正确的姿态
+        tcp_offset: TCP偏移量 [dx, dy, dz] (在末端坐标系下)
+            - None: 不应用偏移
+            - [dx, dy, dz]: 在末端坐标系下的偏移（米）
+            - dx: 沿末端X轴（向前为正）
+            - dy: 沿末端Y轴（向左为正）
+            - dz: 沿末端Z轴（向上为正）
     
     Returns:
         4x4 变换矩阵
@@ -1658,9 +1724,9 @@ def create_aligned_target_pose(button_xyz_base, gripper_rotation=None):
         R_gripper = get_gripper_approach_rotation('perpendicular')
         T = create_aligned_target_pose([x, y, z], R_gripper)
         
-        # 平行于面板
+        # 平行于面板 + TCP偏移
         R_gripper = get_gripper_approach_rotation('parallel')
-        T = create_aligned_target_pose([x, y, z], R_gripper)
+        T = create_aligned_target_pose([x, y, z], R_gripper, tcp_offset=[0.01, 0, 0.02])
     """
     if gripper_rotation is None:
         print("⚠️  未指定夹爪姿态，使用默认姿态（末端朝下）")
@@ -1668,10 +1734,24 @@ def create_aligned_target_pose(button_xyz_base, gripper_rotation=None):
     else:
         R_target = gripper_rotation
     
+    # 应用TCP偏移（在末端坐标系下）
+    button_xyz_adjusted = np.array(button_xyz_base).copy()
+    
+    if tcp_offset is not None and any(abs(x) > 1e-6 for x in tcp_offset):
+        # TCP偏移在末端坐标系下定义，需要转换到基座系
+        # 偏移向量 = R_target @ tcp_offset（旋转变换）
+        tcp_offset_base = R_target @ np.array(tcp_offset)
+        button_xyz_adjusted += tcp_offset_base
+        
+        print(f"  🔧 TCP偏移: 末端系=[{tcp_offset[0]:.3f}, {tcp_offset[1]:.3f}, {tcp_offset[2]:.3f}]m")
+        print(f"            基座系=[{tcp_offset_base[0]:.3f}, {tcp_offset_base[1]:.3f}, {tcp_offset_base[2]:.3f}]m")
+        print(f"  原始目标: ({button_xyz_base[0]:.3f}, {button_xyz_base[1]:.3f}, {button_xyz_base[2]:.3f})")
+        print(f"  调整目标: ({button_xyz_adjusted[0]:.3f}, {button_xyz_adjusted[1]:.3f}, {button_xyz_adjusted[2]:.3f})")
+    
     # 构建目标位姿
     T_target = np.eye(4)
     T_target[:3, :3] = R_target
-    T_target[:3, 3] = button_xyz_base
+    T_target[:3, 3] = button_xyz_adjusted
     
     return T_target
 
@@ -1913,7 +1993,7 @@ def create_target_transform(x, y, z, roll=0.0, pitch=0.0, yaw=0.0, use_6d=False)
 
 def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10, use_current_as_seed=True):
     """
-    使用高精度IK求解（piper_arm数值优化版本）
+    使用高精度IK求解（piper_arm数值优化版本 + 奇异点检测）
     
     参数:
         target_pose: 4x4齐次变换矩阵或Pose消息
@@ -1933,17 +2013,46 @@ def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10, use_current_as_see
         if use_current_as_seed:
             try:
                 initial_guess = get_current_joints()
+                
+                # 🔧 新增：奇异点检测和调试信息
+                if DEBUG_IK_SOLVER:
+                    j_deg = [j*180/PI for j in initial_guess]
+                    print(f"  [IK调试] 种子点关节角度 (度): [{', '.join([f'{j:.2f}' for j in j_deg])}]")
+                
+                # 检查种子点是否接近奇异点
+                if is_near_singularity(initial_guess):
+                    print(f"  ⚠️  种子点接近奇异区域，禁用当前种子以避免局部最小值")
+                    initial_guess = None  # 强制使用解析解作为种子
             except:
                 initial_guess = None
         
-        # 使用优化版本的IK（解析解 + Levenberg-Marquardt优化）
+        # 使用优化版本的IK（解析解 + Levenberg-Marquardt优化 + 多样化种子点）
         result = piper_arm.inverse_kinematics_refined(
             target_pose, 
             initial_guess=initial_guess,
             max_iterations=50, 
-            tolerance=1e-6
+            tolerance=1e-6,
+            enable_diversified_seeds=True  # 启用多样化种子点策略
         )
+        
         if result is not False and result is not None:
+            # 🔧 新增：检查IK结果是否会导致奇异点
+            if is_near_singularity(result):
+                print(f"  ⚠️  IK结果接近奇异点，尝试寻找替代解...")
+                # 尝试不使用当前位置作为种子，寻找其他解
+                alt_result = piper_arm.inverse_kinematics_refined(
+                    target_pose,
+                    initial_guess=None,  # 使用解析解作为种子
+                    max_iterations=50,
+                    tolerance=1e-6,
+                    enable_diversified_seeds=True
+                )
+                if alt_result is not None and not is_near_singularity(alt_result):
+                    print(f"  ✓ 找到安全的替代IK解")
+                    return alt_result
+                else:
+                    print(f"  ⚠️  无法找到远离奇异点的解，使用原解")
+            
             return result
         else:
             # 如果高精度失败，回退到基础解析解
@@ -2631,7 +2740,10 @@ def action_plugin():
         
         # 🎯 关键：使用垂直接近模式（推荐用于插拔动作）
         R_gripper = get_gripper_approach_rotation('perpendicular')
-        targetT = create_aligned_target_pose(target_position, R_gripper)
+        
+        # 应用TCP偏移（Plugin专用）
+        tcp_offset_plugin = np.array(TCP_OFFSET_PLUGIN) + np.array([TCP_GLOBAL_OFFSET_X, TCP_GLOBAL_OFFSET_Y, TCP_GLOBAL_OFFSET_Z])
+        targetT = create_aligned_target_pose(target_position, R_gripper, tcp_offset=tcp_offset_plugin)
         
         target_xyz = targetT[:3, 3]
         target_R = targetT[:3, :3]
@@ -2795,7 +2907,10 @@ def action_toggle():
         
         # 🎯 关键：使用垂直接近模式（推荐用于拨动动作）
         R_gripper = get_gripper_approach_rotation('perpendicular')
-        targetT = create_aligned_target_pose(target_position, R_gripper)
+        
+        # 应用TCP偏移（Toggle专用）
+        tcp_offset_toggle = np.array(TCP_OFFSET_TOGGLE) + np.array([TCP_GLOBAL_OFFSET_X, TCP_GLOBAL_OFFSET_Y, TCP_GLOBAL_OFFSET_Z])
+        targetT = create_aligned_target_pose(target_position, R_gripper, tcp_offset=tcp_offset_toggle)
         
         target_xyz = targetT[:3, 3]
         target_R = targetT[:3, :3]
@@ -2984,7 +3099,10 @@ def action_push():
             
             # 🎯 关键：使用垂直接近模式（推荐用于按压动作）
             R_offset = get_gripper_approach_rotation('perpendicular')
-            targetT = create_aligned_target_pose(target_position, R_offset)
+            
+            # 应用TCP偏移（Push专用）
+            tcp_offset_push = np.array(TCP_OFFSET_PUSH) + np.array([TCP_GLOBAL_OFFSET_X, TCP_GLOBAL_OFFSET_Y, TCP_GLOBAL_OFFSET_Z])
+            targetT = create_aligned_target_pose(target_position, R_offset, tcp_offset=tcp_offset_push)
             
             target_xyz = targetT[:3, 3]
             target_R = targetT[:3, :3]
@@ -3176,7 +3294,10 @@ def action_knob():
         
         # 🎯 关键：使用垂直接近模式（推荐用于旋钮插入动作）
         R_gripper = get_gripper_approach_rotation('perpendicular')
-        targetT = create_aligned_target_pose(target_position, R_gripper)
+        
+        # 应用TCP偏移（Knob专用）
+        tcp_offset_knob = np.array(TCP_OFFSET_KNOB) + np.array([TCP_GLOBAL_OFFSET_X, TCP_GLOBAL_OFFSET_Y, TCP_GLOBAL_OFFSET_Z])
+        targetT = create_aligned_target_pose(target_position, R_gripper, tcp_offset=tcp_offset_knob)
         
         target_xyz = targetT[:3, 3]
         target_R = targetT[:3, :3]

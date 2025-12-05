@@ -16,7 +16,8 @@ class PiperArm:
         self.d = [0.123, 0, 0, 0.25075, 0, 0.091]  # 连杆偏移
         self.theta_offset = [0, -172.2135102 * pi / 180, -102.7827493 * pi / 180, 0, 0, 0]  # 初始角度偏移
         # self.theta_offset = [0, -172.241 * pi / 180, -100.78 * pi / 180, 0, 0, 0]  # 初始角度偏移
-        self.l = 0.06 + 0.091 # 夹爪中点 到 joint4
+        # self.l = 0.06 + 0.091 + 0.07 # 夹爪中点 到 joint4
+        self.l = 0
 
         # R = np.array([[-0.09,  0.94,  0.32],
         #              [-0.99 ,  -0.11,  0.06],
@@ -65,9 +66,19 @@ class PiperArm:
      #   y: 0.04226705985348467
      #   z: -0.6609403996728951
      #   w: 0.7484458792476772
-        self.link6_q_camera = np.array([0.7484458792476772, 0.03464173160721756, 0.04226705985348467, -0.6609403996728951])
-        self.link6_t_camera = [-0.05542734326232865, 0.056368608427934015, 0.038633623349149146]
-
+        # self.link6_q_camera = np.array([0.7484458792476772, 0.03464173160721756, 0.04226705985348467, -0.6609403996728951])
+        # self.link6_t_camera = [-0.05542734326232865, 0.056368608427934015, 0.038633623349149146]
+# translation: 
+#   x: -0.04349580974909609
+#   y: -0.030304206057014574
+#   z: 0.03978019500779535
+# rotation: 
+#   x: 0.07329519537884518
+#   y: 0.006448010305290408
+#   z: -0.7085092267079163
+#   w: 0.7018553363530338
+        self.link6_q_camera = np.array([0.7018553363530338, 0.07329519537884518, 0.006448010305290408, -0.7085092267079163])
+        self.link6_t_camera = [-0.04349580974909609, -0.030304206057014574, 0.03978019500779535]
 
 
         # link limitation
@@ -209,27 +220,181 @@ class PiperArm:
         return False
 
     
-    def inverse_kinematics_refined(self, T_target, initial_guess=None, max_iterations=100, tolerance=1e-6):
+    def _numeric_jacobian(self, q, eps=1e-6):
         """
-        高精度逆运动学求解：在解析解基础上进行数值优化
+        数值雅可比矩阵计算（6x6）
+        前3行：位置对关节角的偏导
+        后3行：姿态(RPY)对关节角的偏导
+        """
+        J = np.zeros((6, 6), dtype=float)
+        T0 = self.forward_kinematics(q)
+        p0 = T0[:3, 3]
+        R0 = T0[:3, :3]
+
+        def rpy_from_R(R):
+            """旋转矩阵转RPY（ZYX欧拉角）"""
+            sy = -R[2, 0]
+            cy = np.sqrt(max(1.0 - sy*sy, 1e-12))
+            yaw   = np.arctan2(R[1,0], R[0,0])
+            pitch = np.arctan2(sy, cy)
+            roll  = np.arctan2(R[2,1], R[2,2])
+            return np.array([roll, pitch, yaw])
+
+        rpy0 = rpy_from_R(R0)
+
+        for i in range(6):
+            dq = np.zeros(6)
+            dq[i] = eps
+            T1 = self.forward_kinematics(q + dq)
+            p1 = T1[:3, 3]
+            R1 = T1[:3, :3]
+            rpy1 = rpy_from_R(R1)
+            J[:3, i] = (p1 - p0) / eps
+            J[3:, i] = (rpy1 - rpy0) / eps
+        return J
+
+    def clip_to_limits(self, joints):
+        """裁剪关节角到合法范围（弧度）"""
+        j = np.array(joints, dtype=float).copy()
+        for i in range(6):
+            lo = np.deg2rad(self.link_limits[i][0])
+            hi = np.deg2rad(self.link_limits[i][1])
+            j[i] = np.clip(j[i], lo, hi)
+        return j
+
+    def inverse_kinematics_damped(self, T_target, initial_guess=None, max_iterations=200, tol_pos=1e-4, tol_ori=1e-3):
+        """
+        阻尼最小二乘IK（Levenberg-Marquardt风格）
+        - 使用数值雅可比
+        - 阻尼因子防止奇异性
+        - 简洁且鲁棒
         
         参数:
             T_target: 4x4目标位姿矩阵
-            initial_guess: 初始关节角度猜测（如果None，则使用解析解）
+            initial_guess: 初始关节角度（弧度），None则使用零位
+            max_iterations: 最大迭代次数
+            tol_pos: 位置收敛容差（米）
+            tol_ori: 姿态收敛容差（弧度，轴向量范数）
+        
+        返回:
+            关节角度列表，或None（失败时）
+        """
+        Tt = np.array(T_target, dtype=float)
+        p_des = Tt[:3, 3].copy()
+        R_des = Tt[:3, :3].copy()
+
+        # 初始猜测
+        if initial_guess is None:
+            q = np.zeros(6, dtype=float)
+        else:
+            q = np.array(initial_guess, dtype=float).copy()
+        q = self.clip_to_limits(q)
+
+        # 权重因子
+        w_pos = 1.0   # 位置权重
+        w_ori = 0.2   # 姿态权重（降低以优先保证位置精度）
+
+        # 阻尼因子（防止雅可比奇异）
+        lam = 1e-2
+        step_max = np.deg2rad(5.0)  # 单步最大变化5度
+
+        for iteration in range(max_iterations):
+            T = self.forward_kinematics(q)
+            p = T[:3, 3]
+            R = T[:3, :3]
+
+            # 位置误差
+            e_pos = p_des - p
+
+            # 姿态误差（小角度轴向量近似：R_err = R^T @ R_des）
+            R_err = R.T @ R_des
+            e_omega = 0.5 * np.array([
+                R_err[2,1] - R_err[1,2],
+                R_err[0,2] - R_err[2,0],
+                R_err[1,0] - R_err[0,1],
+            ])
+
+            # 加权误差向量
+            e = np.hstack([w_pos*e_pos, w_ori*e_omega])
+
+            # 检查收敛
+            if np.linalg.norm(e_pos) < tol_pos and np.linalg.norm(e_omega) < tol_ori:
+                final_error = np.linalg.norm(e_pos)
+                print(f"  ✓ 阻尼最小二乘IK收敛: 迭代{iteration+1}次, 位置误差={final_error*1000:.3f}mm")
+                return q.tolist()
+
+            # 计算雅可比
+            J = self._numeric_jacobian(q)
+            W = np.diag([w_pos, w_pos, w_pos, w_ori, w_ori, w_ori])
+            JW = W @ J
+
+            # 阻尼最小二乘求解：dq = J^T W (JWJ^T + λ²I)^(-1) e
+            H = JW @ JW.T + (lam**2) * np.eye(6)
+            dq = J.T @ W @ np.linalg.solve(H, e)
+
+            # 限制单步变化
+            nrm = np.linalg.norm(dq)
+            if nrm > step_max and nrm > 1e-12:
+                dq *= (step_max / nrm)
+
+            # 更新并裁剪
+            q = self.clip_to_limits(q + dq)
+
+        # 迭代耗尽，检查最终误差
+        T_final = self.forward_kinematics(q)
+        final_error = np.linalg.norm(T_final[:3, 3] - p_des)
+        if final_error < 0.005:  # 5mm
+            print(f"  ⚠️ 阻尼IK达到最大迭代但误差可接受: {final_error*1000:.2f}mm")
+            return q.tolist()
+        else:
+            print(f"  ❌ 阻尼IK失败: {max_iterations}次迭代后误差={final_error*1000:.2f}mm")
+            return None
+
+    def inverse_kinematics_refined(self, T_target, initial_guess=None, max_iterations=100, tolerance=1e-6, enable_diversified_seeds=True):
+        """
+        高精度逆运动学求解：优先使用阻尼最小二乘法（鲁棒），失败时尝试scipy优化
+        
+        参数:
+            T_target: 4x4目标位姿矩阵
+            initial_guess: 初始关节角度猜测（如果None，则使用零位）
             max_iterations: 最大迭代次数
             tolerance: 位置容差（米）
+            enable_diversified_seeds: 是否启用多样化种子点策略（提高鲁棒性）
         
         返回:
             优化后的关节角度列表，或None（失败时）
         """
+        # 🔧 策略1: 优先使用阻尼最小二乘（简洁、鲁棒）
+        result_damped = self.inverse_kinematics_damped(
+            T_target, 
+            initial_guess=initial_guess,
+            max_iterations=max_iterations,
+            tol_pos=tolerance,
+            tol_ori=1e-3
+        )
+        
+        if result_damped is not None:
+            T_check = self.forward_kinematics(result_damped)
+            error = np.linalg.norm(T_check[:3, 3] - T_target[:3, 3])
+            if error < 0.002:  # 2mm精度
+                return result_damped
+        
+        # 🔧 策略2: 回退到scipy优化（如果需要）
+        print(f"  ⚠️ 阻尼IK未达到高精度，尝试scipy优化...")
         from scipy.optimize import least_squares
         
-        # 1. 获取初始解（解析解或用户提供）
+        # 准备初始猜测（用于scipy备用方案）
         if initial_guess is None:
-            initial_guess = self.inverse_kinematics(T_target)
-            if initial_guess is False or initial_guess is None:
-                # 解析解失败，无法优化
-                return None
+            # 尝试解析解（Pieper）
+            analytical_sol = self.inverse_kinematics(T_target)
+            if analytical_sol is not False and analytical_sol is not None:
+                initial_guess = analytical_sol
+            else:
+                initial_guess = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        
+        # 如果阻尼IK得到了接近解，用它作为种子点
+        if result_damped is not None:
+            initial_guess = result_damped
         
         # 2. 定义误差函数（位置+姿态）
         def error_function(q):
@@ -244,7 +409,6 @@ class PiperArm:
             R_error = R_current.T @ R_target  # 相对旋转
             
             # 将旋转误差转换为轴角表示（更适合优化）
-            # 使用Rodriguez公式的逆
             trace = np.trace(R_error)
             if trace >= 3.0 - 1e-6:  # 几乎无旋转误差
                 rot_error = np.zeros(3)
@@ -264,44 +428,97 @@ class PiperArm:
             return np.concatenate([pos_error * 10.0, rot_error])
         
         # 3. 定义关节限位约束
-        def constraint_bounds():
-            # Piper机械臂的关节限位（弧度）
-            lower_bounds = np.array([-2.967, -2.618, -2.618, -3.054, -1.588, -3.054])
-            upper_bounds = np.array([2.967, 2.618, 2.618, 3.054, 1.588, 3.054])
-            return lower_bounds, upper_bounds
+        lower_bounds = np.array([-2.967, -2.618, -2.618, -3.054, -1.588, -3.054])
+        upper_bounds = np.array([2.967, 2.618, 2.618, 3.054, 1.588, 3.054])
         
-        # 4. 使用Levenberg-Marquardt算法优化
-        lower, upper = constraint_bounds()
-        result = least_squares(
-            error_function,
-            x0=np.array(initial_guess),
-            bounds=(lower, upper),
-            method='trf',  # Trust Region Reflective (处理边界更好)
-            ftol=tolerance,
-            xtol=1e-8,
-            max_nfev=max_iterations,
-            verbose=0
-        )
+        # 4. 尝试优化（单次尝试）
+        def try_optimize(seed, attempt_label=""):
+            """尝试从给定种子点优化"""
+            result = least_squares(
+                error_function,
+                x0=np.array(seed),
+                bounds=(lower_bounds, upper_bounds),
+                method='trf',
+                ftol=tolerance,
+                xtol=1e-8,
+                max_nfev=max_iterations,
+                verbose=0
+            )
+            
+            if result.success:
+                optimized_q = result.x.tolist()
+                T_final = self.forward_kinematics(optimized_q)
+                final_pos_error = np.linalg.norm(T_final[:3, 3] - T_target[:3, 3])
+                
+                if final_pos_error < 0.002:  # 2mm精度
+                    print(f"  ✓ 高精度IK成功{attempt_label}: 位置误差={final_pos_error*1000:.3f}mm")
+                    print(f"    优化迭代: {result.nfev}次, 最终残差: {result.cost:.2e}")
+                    print(f"    关节角度: {np.rad2deg(optimized_q)}")
+                    return optimized_q, final_pos_error
+                else:
+                    return optimized_q, final_pos_error
+            
+            return None, float('inf')
         
-        # 5. 验证结果
-        if result.success:
-            optimized_q = result.x.tolist()
+        # 5. 第一次尝试：使用初始猜测
+        best_q, best_error = try_optimize(initial_guess)
+        if best_q is not None and best_error < 0.002:
+            return best_q
+        
+        # 6. 如果失败且启用多样化种子点，尝试额外的种子点
+        if enable_diversified_seeds and (best_q is None or best_error >= 0.002):
+            print(f"  ⚠️  初始种子点IK失败/精度不足 (误差={best_error*1000:.1f}mm)，尝试多样化种子点...")
             
-            # 检查最终误差
-            T_final = self.forward_kinematics(optimized_q)
-            final_pos_error = np.linalg.norm(T_final[:3, 3] - T_target[:3, 3])
+            # 生成多样化种子点策略
+            seed_strategies = []
             
-            if final_pos_error < 0.001:  # 1mm精度
-                print(f"  ✓ 高精度IK成功: 位置误差={final_pos_error*1000:.3f}mm")
-                print(f"    优化迭代: {result.nfev}次, 最终残差: {result.cost:.2e}")
-                print(f"    关节角度: {np.rad2deg(optimized_q)}")
-                return optimized_q
+            # 策略1: 在初始猜测基础上添加小扰动（5次）
+            for i in range(5):
+                perturbed = np.array(initial_guess) + np.random.uniform(-0.2, 0.2, 6)  # ±11.5度
+                perturbed = np.clip(perturbed, lower_bounds, upper_bounds)
+                seed_strategies.append((perturbed, f" (扰动#{i+1})"))
+            
+            # 策略2: 使用零位附近的种子点
+            seed_strategies.append((np.array([0.0, 0.5, -0.5, 0.0, 0.5, 0.0]), " (零位变体#1)"))
+            seed_strategies.append((np.array([0.0, 1.0, -1.0, 0.0, 0.0, 0.0]), " (零位变体#2)"))
+            
+            # 策略3: 基于目标位置的启发式种子点
+            target_x = T_target[0, 3]
+            target_y = T_target[1, 3]
+            target_z = T_target[2, 3]
+            
+            # 根据目标位置估算J1（偏航角）
+            j1_est = np.arctan2(target_y, target_x)
+            # 根据目标高度估算J2/J3
+            if target_z > 0.2:
+                seed_strategies.append((np.array([j1_est, 1.2, -0.8, 0.0, 0.5, 0.0]), " (启发式#1)"))
             else:
-                print(f"  ⚠️ 优化收敛但精度不足: {final_pos_error*1000:.2f}mm")
-                return optimized_q  # 仍然返回，但警告精度
+                seed_strategies.append((np.array([j1_est, 1.5, -1.2, 0.0, 0.5, 0.0]), " (启发式#2)"))
+            
+            # 尝试所有种子点
+            for seed, label in seed_strategies:
+                candidate_q, candidate_error = try_optimize(seed, label)
+                
+                # 更新最佳解
+                if candidate_q is not None and candidate_error < best_error:
+                    best_q = candidate_q
+                    best_error = candidate_error
+                    
+                    # 如果达到高精度，立即返回
+                    if best_error < 0.002:
+                        print(f"  ✓ 多样化种子点成功找到高精度解！")
+                        return best_q
+        
+        # 7. 返回最佳结果（可能不满足精度要求）
+        if best_q is not None:
+            if best_error < 0.002:
+                return best_q
+            else:
+                print(f"  ⚠️ 所有种子点尝试后，最佳精度: {best_error*1000:.2f}mm")
+                return best_q
         else:
-            print(f"  ❌ 数值优化失败: {result.message}")
-            return initial_guess  # 返回初始解析解
+            print(f"  ❌ 所有IK优化尝试均失败")
+            return None
 
 
     def get_joint_tf(self, joint_idx, angle):

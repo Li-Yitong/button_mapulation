@@ -16,7 +16,7 @@ unset COLCON_PREFIX_PATH
 source /opt/ros/foxy/setup.bash
 
 # Source piper_ros
-source /home/robot/button/V4.0/project2/piper_ros/install/setup.bash
+source /home/unitree/manipulation/button/vba/piper_ros/install/setup.bash
 
 echo "✓ 环境已清理，只加载ROS2 Foxy"
 echo "ROS_DISTRO=$ROS_DISTRO"

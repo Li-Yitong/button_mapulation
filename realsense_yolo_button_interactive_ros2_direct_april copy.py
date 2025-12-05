@@ -31,8 +31,9 @@ PI = math.pi
 # ========================================
 DETECTION_SKIP_FRAMES = 0  # 🔧 异步模式：每帧都放入队列，检测线程自动处理最新帧
 YOLO_CONF_THRESHOLD = 0.4  # 🔧 降低阈值提高召回率（小图像需要）
-YOLO_SCALE_FACTOR = 1.0    # 🔧 🚀 极限模式：640x480 → 64x48 (100倍加速!)
+YOLO_SCALE_FACTOR = 0.6    # 🔧 🚀 极限模式：640x480 → 64x48 (100倍加速!)
 UI_REFRESH_RATE = 30       # 🔧 UI刷新率（Hz），独立于检测频率
+ENABLE_UNDISTORTION = True  # 🔧 启用图像去畸变（修复精度问题）
 
 # ========================================
 # 全局变量
@@ -121,25 +122,45 @@ def mouse_callback(event, x, y, flags, param):
                 
                 remember_selected_detection(det)
                 
+                # 计算中心坐标（用于调试）
+                cx_debug = int((x1 + x2) / 2)
+                cy_debug = int((y1 + y2) / 2)
+                
                 print(f"\n{'='*70}")
                 print(f"✓✓✓ 已选择按钮 #{idx} 【已锁定】✓✓✓")
                 print(f"  类型: {class_name}")
                 print(f"  置信度: {conf:.2f}")
                 print(f"  检测框: [{x1}, {y1}, {x2}, {y2}]")
-                print(f"  2D中心: ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
+                print(f"  2D中心: ({cx_debug}, {cy_debug})")
+                
                 if center_3d is not None:
-                    print(f"  [相机坐标系] XYZ: ({center_3d[0]:.3f}, {center_3d[1]:.3f}, {center_3d[2]:.3f}) m")
+                    # 显示深度提取信息
+                    if current_depth_data is not None:
+                        depth_at_center_mm = current_depth_data[cy_debug, cx_debug]
+                        print(f"  📏 中心点深度: {depth_at_center_mm} mm ({depth_at_center_mm * 0.001:.3f} m)")
+                    
+                    print(f"  ✅ [相机坐标系] XYZ: ({center_3d[0]:+.3f}, {center_3d[1]:+.3f}, {center_3d[2]:+.3f}) m")
                     
                     # 转换到基座坐标系
+                    base_3d = None
                     if param is not None and hasattr(param, 'piper_arm') and param.piper_arm is not None:
                         base_3d = transform_button_camera_to_base(center_3d, param.piper, param.piper_arm)
                         if base_3d is not None:
-                            print(f"  [基座坐标系] XYZ: ({base_3d[0]:.3f}, {base_3d[1]:.3f}, {base_3d[2]:.3f}) m")
+                            print(f"  ✅ [基座坐标系] XYZ: ({base_3d[0]:+.3f}, {base_3d[1]:+.3f}, {base_3d[2]:+.3f}) m")
+                            print(f"      └─ 距离基座中心: {np.linalg.norm(base_3d[:2]):.3f} m (XY平面)")
+                            print(f"      └─ 高度: {base_3d[2]:+.3f} m (Z轴)")
                         else:
-                            print(f"  [基座坐标系] 转换失败（无法获取关节角度）")
+                            print(f"  ⚠️  [基座坐标系] 转换失败（无法获取关节角度）")
                     else:
-                        print(f"  [基座坐标系] N/A (Piper SDK未初始化)")
-                print(f"  提示: 按 ENTER 确认 | 按 ESC 取消选择")
+                        print(f"  ⚠️  [基座坐标系] N/A (Piper SDK未初始化)")
+                else:
+                    print(f"  ❌ [3D坐标] 无效（深度数据缺失）")
+                    if current_depth_data is not None:
+                        depth_at_center_mm = current_depth_data[cy_debug, cx_debug]
+                        print(f"      中心点深度: {depth_at_center_mm} mm")
+                    print(f"  ⚠️  可能需要调整检测框位置或相机角度")
+                
+                print(f"  💡 提示: 按 ENTER 确认发布 | 按 ESC 取消选择")
                 print(f"{'='*70}")
                 break
             else:
@@ -213,6 +234,124 @@ def sync_selection_with_detections():
     else:
         selected_button_index = -1
         selected_box_signature = None
+
+
+# ========================================
+# 鲁棒的深度提取
+# ========================================
+def get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=5):
+    """
+    鲁棒的深度提取：使用窗口内的中位数
+    
+    Args:
+        depth_data: 深度图
+        cx, cy: 中心点
+        depth_intrin: 深度相机内参
+        window_size: 窗口大小（默认5x5）
+    
+    Returns:
+        center_3d: [x, y, z] 或 None
+    """
+    h, w = depth_data.shape
+    half_win = window_size // 2
+    
+    # 提取窗口内的深度值
+    y1 = max(0, cy - half_win)
+    y2 = min(h, cy + half_win + 1)
+    x1 = max(0, cx - half_win)
+    x2 = min(w, cx + half_win + 1)
+    
+    depth_window = depth_data[y1:y2, x1:x2]
+    valid_depths = depth_window[depth_window > 0]
+    
+    if len(valid_depths) == 0:
+        return None
+    
+    # 使用中位数（更鲁棒）
+    depth = np.median(valid_depths) * 0.001  # mm -> m
+    
+    if depth > 0:
+        center_3d = np.array([
+            (cx - depth_intrin.ppx) * depth / depth_intrin.fx,
+            (cy - depth_intrin.ppy) * depth / depth_intrin.fy,
+            depth
+        ])
+        return center_3d
+    return None
+
+
+def get_bbox_depth_cloud(depth_data, x1, y1, x2, y2, depth_intrin, min_valid_ratio=0.05, sample_step=3):
+    """
+    🔥 改进版：从检测框内提取点云数据（标准CV方法）
+    
+    核心改进：
+    1. XY坐标使用检测框几何中心（避免偏移）
+    2. Z坐标使用中位数深度（鲁棒抗噪）
+    3. 向量化操作（高性能）
+    
+    坐标计算方式：
+    - X = (bbox_center_x - ppx) * Z / fx  ← 基于检测框中心
+    - Y = (bbox_center_y - ppy) * Z / fy  ← 基于检测框中心
+    - Z = median(depth[bbox内有效点])     ← 深度中位数
+    
+    Args:
+        depth_data: 深度图 (H×W, uint16, mm)
+        x1, y1, x2, y2: 检测框坐标
+        depth_intrin: 深度相机内参
+        min_valid_ratio: 最小有效点比例（默认5%，更宽松）
+        sample_step: 采样步长（默认3，平衡性能和精度）
+    
+    Returns:
+        center_3d: [x, y, z] (XY来自bbox中心, Z为中位数) 或 None
+        valid_ratio: 有效点比例
+    """
+    # 1️⃣ 裁剪并采样检测框区域（降低计算量）
+    roi_depth = depth_data[y1:y2:sample_step, x1:x2:sample_step].copy()
+    
+    # 2️⃣ 生成像素坐标网格（向量化操作）
+    u = np.arange(x1, x2, sample_step)
+    v = np.arange(y1, y2, sample_step)
+    u_grid, v_grid = np.meshgrid(u, v)
+    
+    # 3️⃣ 深度转米 + 反投影（针孔相机模型）
+    z = roi_depth.astype(np.float32) / 1000.0  # mm → m
+    x = (u_grid - depth_intrin.ppx) * z / depth_intrin.fx
+    y = (v_grid - depth_intrin.ppy) * z / depth_intrin.fy
+    
+    # 4️⃣ 过滤无效点（深度范围：0.15~1.5m）
+    valid_mask = (z > 0.15) & (z < 1.5)
+    valid_count = np.sum(valid_mask)
+    total_pixels = roi_depth.size
+    valid_ratio = valid_count / total_pixels if total_pixels > 0 else 0
+    
+    # 🔍 调试信息（仅在失败时打印）
+    if valid_count == 0:
+        global_valid = np.count_nonzero(depth_data > 0)
+        print(f"[深度提取·ROI] ⚠️  检测框[{x1},{y1}→{x2},{y2}] 完全无效! "
+              f"全图有效像素:{global_valid}/{depth_data.size}")
+    
+    # 5️⃣ 有效点太少，返回None
+    if valid_ratio < min_valid_ratio:
+        return None, valid_ratio
+    
+    # 6️⃣ 提取有效点云
+    x_valid = x[valid_mask]
+    y_valid = y[valid_mask]
+    z_valid = z[valid_mask]
+    
+    # 7️⃣ XY使用检测框中心，Z使用深度中位数（标准CV方法）
+    # 🔥 修正：XY应该来自bbox几何中心，而不是所有像素的统计中位数
+    cx = (x1 + x2) // 2  # 检测框中心X
+    cy = (y1 + y2) // 2  # 检测框中心Y
+    z_center = np.median(z_valid)  # 深度使用中位数（鲁棒抗噪）
+    
+    # 根据针孔相机模型计算真实3D坐标
+    x_center = (cx - depth_intrin.ppx) * z_center / depth_intrin.fx
+    y_center = (cy - depth_intrin.ppy) * z_center / depth_intrin.fy
+    
+    center_3d = np.array([x_center, y_center, z_center])
+    
+    return center_3d, valid_ratio
 
 
 # ========================================
@@ -564,6 +703,10 @@ def main(args=None):
     )
     node.get_logger().info("✓ AprilTag检测器初始化成功")
     node.get_logger().warn(f"⚠️  AprilTag尺寸设置: {APRILTAG_SIZE*1000:.0f}mm - 请确认实际尺寸是否一致！")
+    if ENABLE_UNDISTORTION:
+        node.get_logger().info("✓ 图像去畸变已启用 - 修复精度问题")
+    else:
+        node.get_logger().warn("⚠️  图像去畸变已禁用 - 可能影响精度")
     
     # 相机内参（从RealSense获取）
     depth_sensor = profile.get_device().first_depth_sensor()
@@ -576,9 +719,21 @@ def main(args=None):
     # AprilTag检测使用彩色相机内参
     camera_params = [color_intrin_obj.fx, color_intrin_obj.fy, color_intrin_obj.ppx, color_intrin_obj.ppy]
     
+    # 🔧 提取真实的畸变系数（之前硬编码为0导致精度问题！）
+    color_distortion = np.array(color_intrin_obj.coeffs, dtype=np.float64)
+    
+    # 构建OpenCV格式的相机矩阵
+    color_camera_matrix = np.array([
+        [color_intrin_obj.fx, 0, color_intrin_obj.ppx],
+        [0, color_intrin_obj.fy, color_intrin_obj.ppy],
+        [0, 0, 1]
+    ], dtype=np.float64)
+    
     node.get_logger().info(f"✓ 相机内参已加载")
-    node.get_logger().info(f"  彩色相机: fx={color_intrin_obj.fx:.1f}, fy={color_intrin_obj.fy:.1f}")
-    node.get_logger().info(f"  深度相机: fx={depth_intrin_obj.fx:.1f}, fy={depth_intrin_obj.fy:.1f}")
+    node.get_logger().info(f"  彩色相机: fx={color_intrin_obj.fx:.1f}, fy={color_intrin_obj.fy:.1f}, ppx={color_intrin_obj.ppx:.1f}, ppy={color_intrin_obj.ppy:.1f}")
+    node.get_logger().info(f"  深度相机: fx={depth_intrin_obj.fx:.1f}, fy={depth_intrin_obj.fy:.1f}, ppx={depth_intrin_obj.ppx:.1f}, ppy={depth_intrin_obj.ppy:.1f}")
+    node.get_logger().info(f"  🔧 彩色相机畸变系数: {color_distortion}")
+    node.get_logger().info(f"  ⚠️  注意：对齐后的深度图将使用彩色相机内参进行3D反投影")
     
     # 手眼标定参数（从piper_arm.py加载）
     if node.piper_arm is not None:
@@ -588,10 +743,11 @@ def main(args=None):
         link6_T_camera[:3, :3] = quaternion_to_rotation_matrix(node.piper_arm.link6_q_camera)
         link6_T_camera[:3, 3] = node.piper_arm.link6_t_camera
         
-        # 打印手眼标定参数（调试用）
+        # 打印手眼标定参数（调试用）- 使用高精度格式
         node.get_logger().info(f"✓ 手眼标定矩阵已加载")
-        node.get_logger().info(f"  link6_t_camera (平移): {node.piper_arm.link6_t_camera}")
-        node.get_logger().info(f"  link6_q_camera (四元数): {node.piper_arm.link6_q_camera}")
+        node.get_logger().info(f"  link6_t_camera (平移): [{node.piper_arm.link6_t_camera[0]:.10f}, {node.piper_arm.link6_t_camera[1]:.10f}, {node.piper_arm.link6_t_camera[2]:.10f}]")
+        q = node.piper_arm.link6_q_camera
+        node.get_logger().info(f"  link6_q_camera (四元数): [{q[0]:.10f}, {q[1]:.10f}, {q[2]:.10f}, {q[3]:.10f}]")
     else:
         link6_T_camera = np.eye(4)
         link6_T_camera[2, 3] = 0.05
@@ -642,7 +798,28 @@ def main(args=None):
             
             depth_data = np.asanyarray(aligned_depth.get_data())
             color_data = np.asanyarray(color_frame.get_data())
-            depth_intrin = aligned_depth.profile.as_video_stream_profile().intrinsics
+            
+            # 🔧 图像去畸变（修复"补偿第二次就不能用"的问题）
+            if ENABLE_UNDISTORTION:
+                color_data = cv2.undistort(color_data, color_camera_matrix, color_distortion)
+            
+            # 🔧 关键修复：对齐后的深度图应使用彩色相机的内参！
+            # 因为 align.process() 已经把深度图重投影到彩色相机视角
+            depth_intrin = color_frame.profile.as_video_stream_profile().intrinsics
+            
+            # 🔍 调试：检查深度图状态（每30帧打印一次）
+            if frame_counter % 30 == 0:
+                valid_depth_pixels = np.count_nonzero(depth_data > 0)
+                total_pixels = depth_data.size
+                valid_ratio = valid_depth_pixels / total_pixels * 100
+                depth_min = np.min(depth_data[depth_data > 0]) if valid_depth_pixels > 0 else 0
+                depth_max = np.max(depth_data)
+                depth_mean = np.mean(depth_data[depth_data > 0]) if valid_depth_pixels > 0 else 0
+                
+                node.get_logger().info(
+                    f"[深度图诊断] 有效像素: {valid_depth_pixels}/{total_pixels} ({valid_ratio:.1f}%), "
+                    f"深度范围: {depth_min}-{depth_max}mm, 平均: {depth_mean:.0f}mm"
+                )
             
             current_depth_data = depth_data
             current_color_data = color_data
@@ -674,10 +851,31 @@ def main(args=None):
             target_boxes_small = YOLODetection(node.model, color_data_small, conf_threshold=YOLO_CONF_THRESHOLD)
             all_detections = []
             for x1, y1, x2, y2, class_name, conf in target_boxes_small:
+                # 恢复原始坐标
+                x1_full = int(x1 / YOLO_SCALE_FACTOR)
+                y1_full = int(y1 / YOLO_SCALE_FACTOR)
+                x2_full = int(x2 / YOLO_SCALE_FACTOR)
+                y2_full = int(y2 / YOLO_SCALE_FACTOR)
+                
+                # � 改进版：使用ROI点云方法提取3D坐标
+                # 参数：sample_step=3 平衡性能和精度，min_valid_ratio=0.05 更宽松
+                center_3d, valid_ratio = get_bbox_depth_cloud(
+                    depth_data, x1_full, y1_full, x2_full, y2_full, 
+                    depth_intrin, 
+                    min_valid_ratio=0.05,  # 至少5%的像素有深度（更宽松）
+                    sample_step=3          # 每3个像素采样1次（平衡速度）
+                )
+                
+                # 🔧 备用方法：如果ROI点云失败，尝试中心窗口法
+                if center_3d is None:
+                    cx, cy = int((x1_full + x2_full) / 2), int((y1_full + y2_full) / 2)
+                    center_3d = get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=7)
+                    if center_3d is not None:
+                        print(f"[深度提取·ROI] ℹ️  使用备用方法（中心窗口7×7）获取深度")
+                
                 all_detections.append((
-                    int(x1 / YOLO_SCALE_FACTOR), int(y1 / YOLO_SCALE_FACTOR),
-                    int(x2 / YOLO_SCALE_FACTOR), int(y2 / YOLO_SCALE_FACTOR),
-                    class_name, conf, None
+                    x1_full, y1_full, x2_full, y2_full,
+                    class_name, conf, center_3d  # ✅ 已有3D坐标
                 ))
 
             # AprilTag检测与多坐标系转换
@@ -723,13 +921,8 @@ def main(args=None):
                     tvec = det.pose_t
                     
                     # 🔥 修复：使用彩色相机内参矩阵（AprilTag检测在彩色图上）
-                    camera_matrix = np.array([
-                        [color_intrin_obj.fx, 0, color_intrin_obj.ppx],
-                        [0, color_intrin_obj.fy, color_intrin_obj.ppy],
-                        [0, 0, 1]
-                    ], dtype=np.float64)
-                    
-                    dist_coeffs = np.zeros(5, dtype=np.float64)
+                    camera_matrix = color_camera_matrix  # 使用全局定义的矩阵
+                    dist_coeffs = color_distortion  # 🔧 使用真实畸变系数！
                     
                     imgpts, _ = cv2.projectPoints(axis_3d, rvec, tvec, camera_matrix, dist_coeffs)
                     imgpts = imgpts.astype(int)
@@ -889,16 +1082,66 @@ def main(args=None):
                 if selected_button_index >= 0 and selected_button_index < len(all_detections):
                     det = all_detections[selected_button_index]
                     x1, y1, x2, y2, class_name, conf, center_3d = det
+                    
+                    # 🔧 如果没有3D坐标，尝试多种方法重新提取
                     if center_3d is None:
-                        # 简化的3D点提取
-                        cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-                        depth = depth_data[cy, cx] * 0.001  # mm -> m
-                        if depth > 0:
-                            center_3d = np.array([
-                                (cx - depth_intrin.ppx) * depth / depth_intrin.fx,
-                                (cy - depth_intrin.ppy) * depth / depth_intrin.fy,
-                                depth
-                            ])
+                        node.get_logger().warn("⚠️  初次检测未获取3D坐标，尝试重新提取...")
+                        
+                        # 方法1：使用整个检测框的点云（最鲁棒）
+                        center_3d, valid_ratio = get_bbox_depth_cloud(
+                            depth_data, x1, y1, x2, y2, 
+                            depth_intrin, min_valid_ratio=0.03  # 降低到3%
+                        )
+                        if center_3d is not None:
+                            node.get_logger().info(f"✓ 点云方法成功 (有效点: {valid_ratio*100:.1f}%)")
+                        
+                        # 方法2：尝试更大的中心窗口
+                        if center_3d is None:
+                            cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                            center_3d = get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=9)
+                            if center_3d is not None:
+                                node.get_logger().info("✓ 9x9窗口方法成功")
+                        
+                        # 方法3：尝试更大的窗口
+                        if center_3d is None:
+                            center_3d = get_robust_depth(depth_data, cx, cy, depth_intrin, window_size=15)
+                            if center_3d is not None:
+                                node.get_logger().info("✓ 15x15窗口方法成功")
+                        
+                        if center_3d is None:
+                            # ✅ 明确告知用户所有方法都失败了
+                            cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                            depth_at_center = depth_data[cy, cx]
+                            
+                            # 统计检测框内的深度情况
+                            bbox_depth = depth_data[y1:y2, x1:x2]
+                            total_pixels = bbox_depth.size
+                            valid_pixels = np.sum(bbox_depth > 0)
+                            valid_ratio = valid_pixels / total_pixels if total_pixels > 0 else 0
+                            
+                            node.get_logger().error(f"\n{'='*70}")
+                            node.get_logger().error(f"✗✗✗ 无法发布按钮：所有深度提取方法都失败")
+                            node.get_logger().error(f"  按钮类型: {class_name}")
+                            node.get_logger().error(f"  检测框: [{x1}, {y1}] → [{x2}, {y2}] ({x2-x1}x{y2-y1} 像素)")
+                            node.get_logger().error(f"  检测框中心: ({cx}, {cy})")
+                            node.get_logger().error(f"  中心深度值: {depth_at_center} mm")
+                            node.get_logger().error(f"  检测框内有效像素: {valid_pixels}/{total_pixels} ({valid_ratio*100:.1f}%)")
+                            node.get_logger().error(f"")
+                            node.get_logger().error(f"  可能原因:")
+                            node.get_logger().error(f"    1. 按钮表面完全反光（深度相机无法测距）")
+                            node.get_logger().error(f"    2. 检测框内95%以上像素无深度数据")
+                            node.get_logger().error(f"    3. 相机距离过近（<0.3m）或过远（>2m）")
+                            node.get_logger().error(f"    4. 深度相机镜头遮挡或对准错误")
+                            node.get_logger().error(f"")
+                            node.get_logger().error(f"  解决方法:")
+                            node.get_logger().error(f"    • 调整相机角度（避免垂直反光）")
+                            node.get_logger().error(f"    • 调整相机距离（建议0.4-1.5m）")
+                            node.get_logger().error(f"    • 检查深度相机是否正常工作")
+                            node.get_logger().error(f"    • 改善光照条件（避免强光直射）")
+                            node.get_logger().error(f"{'='*70}")
+                            continue  # 跳过发布，继续下一帧
+                    
+                    # 只有有效的3D坐标才发布
                     if center_3d is not None:
                         # 发布到ROS2话题（相机坐标系，兼容）
                         node.publish_result(center_3d, class_name)
@@ -920,16 +1163,38 @@ def main(args=None):
                         
                         # 打印详细信息
                         node.get_logger().info(f"\n{'='*70}")
-                        node.get_logger().info(f"✓ 已确认并发布按钮:")
-                        node.get_logger().info(f"  类型: {class_name}")
-                        node.get_logger().info(f"  [相机坐标系] XYZ: ({center_3d[0]:.3f}, {center_3d[1]:.3f}, {center_3d[2]:.3f}) m")
+                        node.get_logger().info(f"✓✓✓ 已确认并发布按钮 ✓✓✓")
+                        node.get_logger().info(f"{'='*70}")
+                        node.get_logger().info(f"  按钮类型: {class_name}")
+                        node.get_logger().info(f"  置信度: {conf:.2f}")
+                        node.get_logger().info(f"")
+                        node.get_logger().info(f"  📍 [相机坐标系]")
+                        node.get_logger().info(f"      X: {center_3d[0]:+.3f} m")
+                        node.get_logger().info(f"      Y: {center_3d[1]:+.3f} m")
+                        node.get_logger().info(f"      Z: {center_3d[2]:+.3f} m")
                         
                         if base_3d is not None:
-                            node.get_logger().info(f"  [基座坐标系] XYZ: ({base_3d[0]:.3f}, {base_3d[1]:.3f}, {base_3d[2]:.3f}) m")
+                            node.get_logger().info(f"")
+                            node.get_logger().info(f"  🎯 [基座坐标系] ← 推荐使用")
+                            node.get_logger().info(f"      X: {base_3d[0]:+.3f} m")
+                            node.get_logger().info(f"      Y: {base_3d[1]:+.3f} m")
+                            node.get_logger().info(f"      Z: {base_3d[2]:+.3f} m")
+                            node.get_logger().info(f"      距离基座中心(XY): {np.linalg.norm(base_3d[:2]):.3f} m")
+                            node.get_logger().info(f"")
+                            node.get_logger().info(f"  ✅ 已发布到话题:")
+                            node.get_logger().info(f"      /object_point (相机系)")
+                            node.get_logger().info(f"      /object_point_base (基座系)")
+                            node.get_logger().info(f"      /button_type")
                         else:
-                            node.get_logger().info(f"  [基座坐标系] 转换失败")
+                            node.get_logger().warn(f"")
+                            node.get_logger().warn(f"  ⚠️  [基座坐标系] 转换失败（无法获取关节角度）")
+                            node.get_logger().info(f"")
+                            node.get_logger().info(f"  ⚠️  仅发布到话题:")
+                            node.get_logger().info(f"      /object_point (相机系)")
+                            node.get_logger().info(f"      /button_type")
                         
                         node.get_logger().info(f"{'='*70}")
+                        node.get_logger().info(f"")
                         
                         selected_button_index = -1
                         selected_button_locked = False
