@@ -123,8 +123,8 @@ APRILTAG_ALIGNMENT_TOLERANCE = 5.0 * PI / 180  # 姿态容差：5度
 #    观察到：实际Yaw=155°, 目标Yaw=150°, 偏差=+5°
 #    修正：APRILTAG_RPY_OFFSET_YAW = -5.0
 #
-APRILTAG_RPY_OFFSET_ROLL = -8   # Roll补偿（度）⚠️ 正值=顺时针修正
-APRILTAG_RPY_OFFSET_PITCH = -10  # Pitch补偿（度）⚠️ 正值=抬头修正
+APRILTAG_RPY_OFFSET_ROLL = -7   # Roll补偿（度）⚠️ 正值=顺时针修正
+APRILTAG_RPY_OFFSET_PITCH = -15  # Pitch补偿（度）⚠️ 正值=抬头修正
 APRILTAG_RPY_OFFSET_YAW = 2    # Yaw补偿（度）⚠️ 正值=逆时针修正（常用）
 
 # ========================================
@@ -156,7 +156,7 @@ APRILTAG_RPY_OFFSET_YAW = 2    # Yaw补偿（度）⚠️ 正值=逆时针修正
 
 TCP_OFFSET_TOGGLE = [0,0,0]   # Toggle拨动开关
 TCP_OFFSET_PLUGIN = [0,0,-0.15]   # Plugin插拔连接器
-TCP_OFFSET_PUSH = [0.013,0.063,-0.127]     # Push按压按钮
+TCP_OFFSET_PUSH = [0.019,0.058,-0.15]     # Push按压按钮
 TCP_OFFSET_KNOB = [0.013,0.063,-0.15]     # Knob旋转旋钮  +  hou   +zuo  +xia
 
 # 🔧 快速调试开关：统一调整所有TCP（全局微调）
@@ -219,14 +219,14 @@ USE_HOME_POSITION = True
 #    姿态由 APRILTAG_BASE_ROLL/PITCH/YAW 自动计算（通过get_gripper_approach_rotation）
 #
 # 位置 (单位：米) - 实际按钮/旋钮的3D坐标
-TARGET_X = 0.4  # X坐标 (降低以保证可达性)
-TARGET_Y = 0.19 # Y坐标
-TARGET_Z = 0.0  # Z坐标 (使用末端朝下姿态可达更高位置)
+# TARGET_X = 0.4  # X坐标 (降低以保证可达性)
+# TARGET_Y = 0.19 # Y坐标
+# TARGET_Z = 0.0  # Z坐标 (使用末端朝下姿态可达更高位置)
 
-# XYZ: (+0.560, -0.104, -0.038) m
-# TARGET_X = +0.560  # X坐标 (降低以保证可达性)
-# TARGET_Y = -0.104  # Y坐标 
-# TARGET_Z = -0.038  # Z坐标 (使用末端朝下姿态可达更高位置)
+# XYZ: (+0.560, -0.104, -0.038) m+0.432, -0.034, -0.068
+TARGET_X = +0.432 # X坐标 (降低以保证可达性)
+TARGET_Y = -0.034  # Y坐标 
+TARGET_Z = -0.068  # Z坐标 (使用末端朝下姿态可达更高位置)
 
 
 
@@ -2021,8 +2021,9 @@ def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10, use_current_as_see
                 
                 # 检查种子点是否接近奇异点
                 if is_near_singularity(initial_guess):
-                    print(f"  ⚠️  种子点接近奇异区域，禁用当前种子以避免局部最小值")
-                    initial_guess = None  # 强制使用解析解作为种子
+                    print(f"  ⚠️  种子点接近奇异区域，使用安全的替代种子点")
+                    # 🔧 关键修复：使用安全的中立位姿，而不是None（防止解析解超限）
+                    initial_guess = [0.0, 1.0, -1.0, 0.0, 0.5, 0.0]  # 远离奇异点的典型配置
             except:
                 initial_guess = None
         
@@ -2039,17 +2040,29 @@ def compute_ik_moveit2(target_pose, timeout=5.0, attempts=10, use_current_as_see
             # 🔧 新增：检查IK结果是否会导致奇异点
             if is_near_singularity(result):
                 print(f"  ⚠️  IK结果接近奇异点，尝试寻找替代解...")
-                # 尝试不使用当前位置作为种子，寻找其他解
-                alt_result = piper_arm.inverse_kinematics_refined(
-                    target_pose,
-                    initial_guess=None,  # 使用解析解作为种子
-                    max_iterations=50,
-                    tolerance=1e-6,
-                    enable_diversified_seeds=True
-                )
-                if alt_result is not None and not is_near_singularity(alt_result):
-                    print(f"  ✓ 找到安全的替代IK解")
-                    return alt_result
+                # 🔧 关键修复：使用多个安全种子点，避免None导致的超限解析解
+                safe_seeds = [
+                    [0.0, 1.0, -1.0, 0.0, 0.5, 0.0],   # 中立配置1
+                    [0.0, 1.2, -1.2, 0.0, 0.3, 0.0],   # 中立配置2
+                    [0.0, 0.8, -0.8, 0.0, 0.6, 0.0],   # 中立配置3
+                ]
+                
+                best_alt = None
+                for i, seed in enumerate(safe_seeds):
+                    alt_result = piper_arm.inverse_kinematics_refined(
+                        target_pose,
+                        initial_guess=seed,
+                        max_iterations=50,
+                        tolerance=1e-6,
+                        enable_diversified_seeds=False  # 单个种子尝试
+                    )
+                    if alt_result is not None and not is_near_singularity(alt_result):
+                        print(f"  ✓ 找到安全的替代IK解（种子点#{i+1}）")
+                        best_alt = alt_result
+                        break
+                
+                if best_alt is not None:
+                    return best_alt
                 else:
                     print(f"  ⚠️  无法找到远离奇异点的解，使用原解")
             
@@ -3233,21 +3246,21 @@ def action_push():
             if not move_to_home(speed=SLOW_SPEED, description="Push撤回修正"):
                 print("  ❌ 无法返回HOME位姿")
     
-    # 步骤6/5: 回零位
-    print("\n步骤6: 回零位...")
-    actual_joints_before_zero = get_current_joints()
-    actual_T_before_zero = piper_arm.forward_kinematics(actual_joints_before_zero)
-    actual_xyz_before_zero = actual_T_before_zero[:3, 3]
-    print(f"  当前位置: XYZ=({actual_xyz_before_zero[0]:.3f}, {actual_xyz_before_zero[1]:.3f}, {actual_xyz_before_zero[2]:.3f})")
+    # # 步骤6/5: 回零位
+    # print("\n步骤6: 回零位...")
+    # actual_joints_before_zero = get_current_joints()
+    # actual_T_before_zero = piper_arm.forward_kinematics(actual_joints_before_zero)
+    # actual_xyz_before_zero = actual_T_before_zero[:3, 3]
+    # print(f"  当前位置: XYZ=({actual_xyz_before_zero[0]:.3f}, {actual_xyz_before_zero[1]:.3f}, {actual_xyz_before_zero[2]:.3f})")
     
-    if not safe_return_to_zero(description="Push回零"):
-        return False
-    final_joints = get_current_joints()
-    max_error = max(abs(j) for j in final_joints)
-    print(f"  ✓ 回零完成 (最大偏差: {max_error:.4f} rad = {max_error*180/PI:.2f}°)")
+    # if not safe_return_to_zero(description="Push回零"):
+    #     return False
+    # final_joints = get_current_joints()
+    # max_error = max(abs(j) for j in final_joints)
+    # print(f"  ✓ 回零完成 (最大偏差: {max_error:.4f} rad = {max_error*180/PI:.2f}°)")
 
-    # 保存和可视化完整轨迹
-    save_and_visualize_trajectory()
+    # # 保存和可视化完整轨迹
+    # save_and_visualize_trajectory()
     
     print("="*70)
     print("✓✓✓ Push 操作完成！✓✓✓")

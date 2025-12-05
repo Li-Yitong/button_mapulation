@@ -33,7 +33,7 @@ DETECTION_SKIP_FRAMES = 0  # 🔧 异步模式：每帧都放入队列，检测�
 YOLO_CONF_THRESHOLD = 0.4  # 🔧 降低阈值提高召回率（小图像需要）
 YOLO_SCALE_FACTOR = 0.6    # 🔧 🚀 极限模式：640x480 → 64x48 (100倍加速!)
 UI_REFRESH_RATE = 30       # 🔧 UI刷新率（Hz），独立于检测频率
-ENABLE_UNDISTORTION = False  # 🔧 ⚠️ 禁用去畸变（相机畸变系数为0时必须关闭）
+ENABLE_UNDISTORTION = True  # 🔧 ⚠️ 禁用去畸变（相机畸变系数为0时必须关闭）
 
 # ========================================
 # 全局变量

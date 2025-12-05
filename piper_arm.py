@@ -2,7 +2,7 @@ import numpy as np
 import math
 PI = math.pi
 from math import atan2, sqrt, acos, pi, sin, cos, atan
-import numpy as np
+
 from utils.utils_math import rotation_matrix_to_euler, rotation_matrix_to_quaternion, quaternion_to_rotation_matrix
 
 np.set_printoptions(precision=2)
@@ -11,12 +11,18 @@ np.set_printoptions(suppress=True)
 class PiperArm:
     def __init__(self):
         # DH参数定义（单位：米/弧度）
+        # self.alpha = [0, -pi / 2, 0, pi / 2, -pi / 2, pi / 2]  # 扭转角
+        # self.a = [0, 0, 0.28503, -0.02198, 0, 0]  # 连杆长度
+        # self.d = [0.123, 0, 0, 0.25075, 0, 0.091]  # 连杆偏移
+        # self.theta_offset = [0, -172.2135102 * pi / 180, -102.7827493 * pi / 180, 0, 0, 0]  # 初始角度偏移
+        # self.theta_offset = [0, -172.241 * pi / 180, -100.78 * pi / 180, 0, 0, 0]  # 初始角度偏移
+        # self.l = 0.06 + 0.091 + 0.07 # 夹爪中点 到 joint4
+        # self.l = 0
+
         self.alpha = [0, -pi / 2, 0, pi / 2, -pi / 2, pi / 2]  # 扭转角
         self.a = [0, 0, 0.28503, -0.02198, 0, 0]  # 连杆长度
         self.d = [0.123, 0, 0, 0.25075, 0, 0.091]  # 连杆偏移
-        self.theta_offset = [0, -172.2135102 * pi / 180, -102.7827493 * pi / 180, 0, 0, 0]  # 初始角度偏移
-        # self.theta_offset = [0, -172.241 * pi / 180, -100.78 * pi / 180, 0, 0, 0]  # 初始角度偏移
-        # self.l = 0.06 + 0.091 + 0.07 # 夹爪中点 到 joint4
+        self.theta_offset = [0, -172.22 * pi / 180, -102.78 * pi / 180, 0, 0, 0]  # 初始角度偏移
         self.l = 0
 
         # R = np.array([[-0.09,  0.94,  0.32],
@@ -81,6 +87,7 @@ class PiperArm:
         self.link6_t_camera = [-0.04349580974909609, -0.030304206057014574, 0.03978019500779535]
 
 
+
         # link limitation
         self.link_limits = [[-154, 154], [0, 195], [-175, 0], [-106, 106], [-75, 75], [-100, 100]]
 
@@ -126,6 +133,15 @@ class PiperArm:
             T_total = T_total @ T
 
         return T_total
+
+    def _rpy_from_R(self, R):
+        """旋转矩阵转ZYX欧拉角"""
+        sy = -R[2, 0]
+        cy = np.sqrt(max(1.0 - sy * sy, 1e-12))
+        yaw = np.arctan2(R[1, 0], R[0, 0])
+        pitch = np.arctan2(sy, cy)
+        roll = np.arctan2(R[2, 1], R[2, 2])
+        return np.array([roll, pitch, yaw])
 
     def forward_kinematics_sub(self, joints, end):
         # 0_T_end
@@ -231,16 +247,7 @@ class PiperArm:
         p0 = T0[:3, 3]
         R0 = T0[:3, :3]
 
-        def rpy_from_R(R):
-            """旋转矩阵转RPY（ZYX欧拉角）"""
-            sy = -R[2, 0]
-            cy = np.sqrt(max(1.0 - sy*sy, 1e-12))
-            yaw   = np.arctan2(R[1,0], R[0,0])
-            pitch = np.arctan2(sy, cy)
-            roll  = np.arctan2(R[2,1], R[2,2])
-            return np.array([roll, pitch, yaw])
-
-        rpy0 = rpy_from_R(R0)
+        rpy0 = self._rpy_from_R(R0)
 
         for i in range(6):
             dq = np.zeros(6)
@@ -248,7 +255,7 @@ class PiperArm:
             T1 = self.forward_kinematics(q + dq)
             p1 = T1[:3, 3]
             R1 = T1[:3, :3]
-            rpy1 = rpy_from_R(R1)
+            rpy1 = self._rpy_from_R(R1)
             J[:3, i] = (p1 - p0) / eps
             J[3:, i] = (rpy1 - rpy0) / eps
         return J
@@ -267,7 +274,7 @@ class PiperArm:
         阻尼最小二乘IK（Levenberg-Marquardt风格）
         - 使用数值雅可比
         - 阻尼因子防止奇异性
-        - 简洁且鲁棒
+        - 自适应阻尼+多重启策略
         
         参数:
             T_target: 4x4目标位姿矩阵
@@ -290,13 +297,17 @@ class PiperArm:
             q = np.array(initial_guess, dtype=float).copy()
         q = self.clip_to_limits(q)
 
-        # 权重因子
-        w_pos = 1.0   # 位置权重
-        w_ori = 0.2   # 姿态权重（降低以优先保证位置精度）
+        # 权重因子（位置优先）
+        w_pos = 1.0
+        w_ori = 0.15  # 🔧 进一步降低姿态权重，优先满足位置
 
-        # 阻尼因子（防止雅可比奇异）
-        lam = 1e-2
-        step_max = np.deg2rad(5.0)  # 单步最大变化5度
+        # 自适应阻尼因子
+        lam = 5e-3  # 🔧 初始阻尼略高，提高稳定性
+        lam_min, lam_max = 1e-4, 1e-1
+        step_max = np.deg2rad(3.0)  # 🔧 减小步长避免震荡
+
+        best_q = q.copy()
+        best_err = float('inf')
 
         for iteration in range(max_iterations):
             T = self.forward_kinematics(q)
@@ -305,8 +316,9 @@ class PiperArm:
 
             # 位置误差
             e_pos = p_des - p
+            pos_err_norm = np.linalg.norm(e_pos)
 
-            # 姿态误差（小角度轴向量近似：R_err = R^T @ R_des）
+            # 姿态误差（小角度轴向量近似）
             R_err = R.T @ R_des
             e_omega = 0.5 * np.array([
                 R_err[2,1] - R_err[1,2],
@@ -314,21 +326,25 @@ class PiperArm:
                 R_err[1,0] - R_err[0,1],
             ])
 
-            # 加权误差向量
-            e = np.hstack([w_pos*e_pos, w_ori*e_omega])
+            # 记录最佳解
+            if pos_err_norm < best_err:
+                best_err = pos_err_norm
+                best_q = q.copy()
 
             # 检查收敛
-            if np.linalg.norm(e_pos) < tol_pos and np.linalg.norm(e_omega) < tol_ori:
-                final_error = np.linalg.norm(e_pos)
-                print(f"  ✓ 阻尼最小二乘IK收敛: 迭代{iteration+1}次, 位置误差={final_error*1000:.3f}mm")
+            if pos_err_norm < tol_pos and np.linalg.norm(e_omega) < tol_ori:
+                print(f"  ✓ 阻尼IK收敛: 迭代{iteration+1}次, 位置误差={pos_err_norm*1000:.3f}mm")
                 return q.tolist()
+
+            # 加权误差
+            e = np.hstack([w_pos*e_pos, w_ori*e_omega])
 
             # 计算雅可比
             J = self._numeric_jacobian(q)
             W = np.diag([w_pos, w_pos, w_pos, w_ori, w_ori, w_ori])
             JW = W @ J
 
-            # 阻尼最小二乘求解：dq = J^T W (JWJ^T + λ²I)^(-1) e
+            # 阻尼最小二乘求解
             H = JW @ JW.T + (lam**2) * np.eye(6)
             dq = J.T @ W @ np.linalg.solve(H, e)
 
@@ -337,17 +353,24 @@ class PiperArm:
             if nrm > step_max and nrm > 1e-12:
                 dq *= (step_max / nrm)
 
-            # 更新并裁剪
-            q = self.clip_to_limits(q + dq)
+            # 更新
+            q_new = self.clip_to_limits(q + dq)
+            T_new = self.forward_kinematics(q_new)
+            new_err = np.linalg.norm(T_new[:3, 3] - p_des)
 
-        # 迭代耗尽，检查最终误差
-        T_final = self.forward_kinematics(q)
-        final_error = np.linalg.norm(T_final[:3, 3] - p_des)
-        if final_error < 0.005:  # 5mm
-            print(f"  ⚠️ 阻尼IK达到最大迭代但误差可接受: {final_error*1000:.2f}mm")
-            return q.tolist()
+            # 🔧 自适应阻尼：误差减小则降低阻尼，否则增加
+            if new_err < pos_err_norm:
+                lam = max(lam * 0.7, lam_min)
+                q = q_new
+            else:
+                lam = min(lam * 1.5, lam_max)
+
+        # 返回最佳解（如果误差可接受）
+        if best_err < 0.005:  # 5mm
+            print(f"  ⚠️ 阻尼IK达最大迭代，返回最佳解: {best_err*1000:.2f}mm")
+            return best_q.tolist()
         else:
-            print(f"  ❌ 阻尼IK失败: {max_iterations}次迭代后误差={final_error*1000:.2f}mm")
+            print(f"  ❌ 阻尼IK失败: 最佳误差={best_err*1000:.2f}mm")
             return None
 
     def inverse_kinematics_refined(self, T_target, initial_guess=None, max_iterations=100, tolerance=1e-6, enable_diversified_seeds=True):
@@ -364,7 +387,7 @@ class PiperArm:
         返回:
             优化后的关节角度列表，或None（失败时）
         """
-        # 🔧 策略1: 优先使用阻尼最小二乘（简洁、鲁棒）
+        # 🔧 策略1: 优先使用阻尼最小二乘（简洁、鲁棒、自适应）
         result_damped = self.inverse_kinematics_damped(
             T_target, 
             initial_guess=initial_guess,
@@ -383,18 +406,29 @@ class PiperArm:
         print(f"  ⚠️ 阻尼IK未达到高精度，尝试scipy优化...")
         from scipy.optimize import least_squares
         
+        # 定义关节限位（提前定义，用于种子点裁剪）
+        lower_bounds = np.array([-2.967, -2.618, -2.618, -3.054, -1.588, -3.054])
+        upper_bounds = np.array([2.967, 2.618, 2.618, 3.054, 1.588, 3.054])
+        
         # 准备初始猜测（用于scipy备用方案）
         if initial_guess is None:
             # 尝试解析解（Pieper）
             analytical_sol = self.inverse_kinematics(T_target)
             if analytical_sol is not False and analytical_sol is not None:
                 initial_guess = analytical_sol
+                # 🔧 关键修复：强制裁剪解析解到限位范围内
+                initial_guess = np.clip(np.array(initial_guess), lower_bounds, upper_bounds).tolist()
+                print(f"  [调试] 解析IK解已裁剪到限位: {[f'{np.rad2deg(j):.1f}' for j in initial_guess]}°")
             else:
-                initial_guess = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                # 使用安全的默认种子点（远离奇异点）
+                initial_guess = [0.0, 1.0, -1.0, 0.0, 0.5, 0.0]  # 典型配置
         
         # 如果阻尼IK得到了接近解，用它作为种子点
         if result_damped is not None:
             initial_guess = result_damped
+        
+        # 🔧 关键修复：确保种子点在限位内（防止x0 infeasible）
+        initial_guess = np.clip(np.array(initial_guess), lower_bounds, upper_bounds).tolist()
         
         # 2. 定义误差函数（位置+姿态）
         def error_function(q):
@@ -427,23 +461,30 @@ class PiperArm:
             # 加权误差（位置误差权重更高）
             return np.concatenate([pos_error * 10.0, rot_error])
         
-        # 3. 定义关节限位约束
-        lower_bounds = np.array([-2.967, -2.618, -2.618, -3.054, -1.588, -3.054])
-        upper_bounds = np.array([2.967, 2.618, 2.618, 3.054, 1.588, 3.054])
-        
-        # 4. 尝试优化（单次尝试）
+        # 2. 尝试优化（单次尝试）
         def try_optimize(seed, attempt_label=""):
             """尝试从给定种子点优化"""
-            result = least_squares(
-                error_function,
-                x0=np.array(seed),
-                bounds=(lower_bounds, upper_bounds),
-                method='trf',
-                ftol=tolerance,
-                xtol=1e-8,
-                max_nfev=max_iterations,
-                verbose=0
-            )
+            # 🔧 关键修复：确保种子点在限位内
+            seed_clipped = np.clip(np.array(seed), lower_bounds, upper_bounds)
+            
+            # 验证裁剪是否改变了种子点
+            if not np.allclose(seed, seed_clipped, atol=1e-6):
+                print(f"    ⚠️  种子点{attempt_label}已裁剪到限位")
+            
+            try:
+                result = least_squares(
+                    error_function,
+                    x0=seed_clipped,
+                    bounds=(lower_bounds, upper_bounds),
+                    method='trf',
+                    ftol=tolerance,
+                    xtol=1e-8,
+                    max_nfev=max_iterations,
+                    verbose=0
+                )
+            except ValueError as e:
+                print(f"    ❌ least_squares失败{attempt_label}: {e}")
+                return None, float('inf')
             
             if result.success:
                 optimized_q = result.x.tolist()
@@ -478,9 +519,10 @@ class PiperArm:
                 perturbed = np.clip(perturbed, lower_bounds, upper_bounds)
                 seed_strategies.append((perturbed, f" (扰动#{i+1})"))
             
-            # 策略2: 使用零位附近的种子点
-            seed_strategies.append((np.array([0.0, 0.5, -0.5, 0.0, 0.5, 0.0]), " (零位变体#1)"))
-            seed_strategies.append((np.array([0.0, 1.0, -1.0, 0.0, 0.0, 0.0]), " (零位变体#2)"))
+            # 策略2: 使用零位附近的种子点（远离奇异点的安全配置）
+            seed_strategies.append((np.array([0.0, 1.0, -1.0, 0.0, 0.5, 0.0]), " (零位变体#1)"))
+            seed_strategies.append((np.array([0.0, 0.8, -0.8, 0.0, 0.3, 0.0]), " (零位变体#2)"))
+            seed_strategies.append((np.array([0.0, 1.5, -1.5, 0.0, 0.0, 0.0]), " (零位变体#3)"))
             
             # 策略3: 基于目标位置的启发式种子点
             target_x = T_target[0, 3]

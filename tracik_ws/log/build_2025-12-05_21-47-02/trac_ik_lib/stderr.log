@@ -1,0 +1,7 @@
+[01m[K/home/unitree/manipulation/button/vba/tracik_ws/src/trac_ik/trac_ik_lib/src/trac_ik.cpp:37:10:[m[K [01;31m[Kfatal error: [m[Kurdf/model.hpp: No such file or directory
+   37 | #include [01;31m[K<urdf/model.hpp>[m[K
+      |          [01;31m[K^~~~~~~~~~~~~~~~[m[K
+compilation terminated.
+make[2]: *** [CMakeFiles/trac_ik.dir/build.make:107: CMakeFiles/trac_ik.dir/src/trac_ik.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:153: CMakeFiles/trac_ik.dir/all] Error 2
+make: *** [Makefile:146: all] Error 2

@@ -1,0 +1,10 @@
+[0.139s] Invoking command in '/home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /home/unitree/.local/bin/cmake --build /home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib -- -j12 -l12
+[0.213s] [ 25%] [32mBuilding CXX object CMakeFiles/trac_ik.dir/src/trac_ik.cpp.o[0m
+[0.336s] [01m[K/home/unitree/manipulation/button/vba/tracik_ws/src/trac_ik/trac_ik_lib/src/trac_ik.cpp:37:10:[m[K [01;31m[Kfatal error: [m[Kurdf/model.hpp: No such file or directory
+[0.336s]    37 | #include [01;31m[K<urdf/model.hpp>[m[K
+[0.336s]       |          [01;31m[K^~~~~~~~~~~~~~~~[m[K
+[0.336s] compilation terminated.
+[0.341s] make[2]: *** [CMakeFiles/trac_ik.dir/build.make:107: CMakeFiles/trac_ik.dir/src/trac_ik.cpp.o] Error 1
+[0.341s] make[1]: *** [CMakeFiles/Makefile2:153: CMakeFiles/trac_ik.dir/all] Error 2
+[0.341s] make: *** [Makefile:146: all] Error 2
+[0.343s] Invoked command in '/home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib' returned '2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /home/unitree/.local/bin/cmake --build /home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib -- -j12 -l12

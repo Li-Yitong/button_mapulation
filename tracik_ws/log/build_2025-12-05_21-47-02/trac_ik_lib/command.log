@@ -1,0 +1,2 @@
+Invoking command in '/home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /home/unitree/.local/bin/cmake --build /home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib -- -j12 -l12
+Invoked command in '/home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib' returned '2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /home/unitree/.local/bin/cmake --build /home/unitree/manipulation/button/vba/tracik_ws/build/trac_ik_lib -- -j12 -l12

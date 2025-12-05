@@ -1,0 +1,5 @@
+source;share/trac_ik_lib/local_setup.bash
+source;share/trac_ik_lib/local_setup.dsv
+source;share/trac_ik_lib/local_setup.ps1
+source;share/trac_ik_lib/local_setup.sh
+source;share/trac_ik_lib/local_setup.zsh
