@@ -24,6 +24,13 @@ class PiperTFPublisher(Node):
         self.get_logger().info("Piper TF Publisher - ROS2 版本")
         self.get_logger().info("="*70)
         
+        # 声明参数：是否发布相机TF（手眼标定时设为False）
+        self.declare_parameter('publish_camera_tf', True)
+        self.publish_camera = self.get_parameter('publish_camera_tf').get_parameter_value().bool_value
+        
+        if not self.publish_camera:
+            self.get_logger().warn("⚠️  相机TF发布已禁用（手眼标定模式）")
+        
         # 初始化 Piper SDK
         try:
             self.piper = C_PiperInterface_V2()
@@ -63,9 +70,9 @@ class PiperTFPublisher(Node):
             
             joints = [theta1, theta2, theta3, theta4, theta5, theta6]
             
-            # 发布TF变换
+            # 发布TF变换（根据参数决定是否发布相机TF）
             time_now = self.get_clock().now().to_msg()
-            publish_tf_ros2(self, self.piper_arm, joints, time_now)
+            publish_tf_ros2(self, self.piper_arm, joints, time_now, publish_camera=self.publish_camera)
             
         except Exception as e:
             self.get_logger().error(f"TF发布错误: {e}")

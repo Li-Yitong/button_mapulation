@@ -123,9 +123,9 @@ APRILTAG_ALIGNMENT_TOLERANCE = 5.0 * PI / 180  # 姿态容差：5度
 #    观察到：实际Yaw=155°, 目标Yaw=150°, 偏差=+5°
 #    修正：APRILTAG_RPY_OFFSET_YAW = -5.0
 #
-APRILTAG_RPY_OFFSET_ROLL = -7   # Roll补偿（度）⚠️ 正值=顺时针修正
-APRILTAG_RPY_OFFSET_PITCH = -15  # Pitch补偿（度）⚠️ 正值=抬头修正
-APRILTAG_RPY_OFFSET_YAW = 2    # Yaw补偿（度）⚠️ 正值=逆时针修正（常用）
+APRILTAG_RPY_OFFSET_ROLL = -0   # Roll补偿（度）⚠️ 正值=顺时针修正
+APRILTAG_RPY_OFFSET_PITCH = -13  # Pitch补偿（度）⚠️ 正值=抬头修正
+APRILTAG_RPY_OFFSET_YAW = -3    # Yaw补偿（度）⚠️ 正值=逆时针修正（常用）
 
 # ========================================
 # 新增：每种按钮的独立TCP偏移
@@ -156,8 +156,8 @@ APRILTAG_RPY_OFFSET_YAW = 2    # Yaw补偿（度）⚠️ 正值=逆时针修正
 
 TCP_OFFSET_TOGGLE = [0,0,0]   # Toggle拨动开关
 TCP_OFFSET_PLUGIN = [0,0,-0.15]   # Plugin插拔连接器
-TCP_OFFSET_PUSH = [0.019,0.058,-0.15]     # Push按压按钮
-TCP_OFFSET_KNOB = [0.013,0.063,-0.15]     # Knob旋转旋钮  +  hou   +zuo  +xia
+TCP_OFFSET_PUSH = [0.035,0.058,-0.142]     # Push按压按钮
+TCP_OFFSET_KNOB = [0.013,0.063,-0.1]     # Knob旋转旋钮  +  hou   +zuo  +xia
 
 # 🔧 快速调试开关：统一调整所有TCP（全局微调）
 # 💡 用途：快速测试偏移方向，找到问题后再调整具体按钮的TCP
@@ -188,13 +188,20 @@ TCP_GLOBAL_OFFSET_Z = 0.0  # 全局Z偏移（米）⚠️ 正值向上，负值�
 # [INFO] [1764926421.641488584] [piper_status_reader]:   J4: 0.00°
 # [INFO] [1764926421.641638102] [piper_status_reader]:   J5: 42.93°
 # [INFO] [1764926421.641786514] [piper_status_reader]:   J6: -4.50°
+
+# [INFO] [1765017857.646891447] [piper_go_zero_demo]:   关节1:   -2.31°
+# [INFO] [1765017857.647416563] [piper_go_zero_demo]:   关节2:   93.73°
+# [INFO] [1765017857.647839028] [piper_go_zero_demo]:   关节3:  -75.78°
+# [INFO] [1765017857.648293436] [piper_go_zero_demo]:   关节4:    4.40°
+# [INFO] [1765017857.648639917] [piper_go_zero_demo]:   关节5:   64.60°
+# [INFO] [1765017857.649156598] [piper_go_zero_demo]:   关节6:   -3.33°
 HOME_JOINTS = [
-    -1.08 * PI / 180,   # J1: -4.68°
-   89.47 * PI / 180,   # J2: 86.06°
-    -59.96 * PI / 180,  # J3: -86.16°
-    0 * PI / 180,    # J4: 5.27°
-   42.93 * PI / 180,    # J5: 65.0° (原69.12°，降低避免接近限位)
-    -4.50 * PI / 180     # J6: 0.94°
+    -2.31 * PI / 180,   # J1: -2.31°
+    93.73 * PI / 180,   # J2: 93.73°
+    -75.78 * PI / 180,  # J3: -75.78°
+    4.40 * PI / 180,    # J4: 4.40°
+    64.60 * PI / 180,    # J5: 64.60°
+    -3.33 * PI / 180     # J6: -3.33°
 ]
 
 # HOME_JOINTS = [

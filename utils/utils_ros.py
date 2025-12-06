@@ -29,7 +29,7 @@ def publish_tf(arm, joints, time):
         transform_stamped = TransformStamped()
         # transform_stamped.header.stamp = rospy.Time.now()
         transform_stamped.header.stamp = time
-        transform_stamped.header.frame_id = "link{}".format(i) if i > 0 else "arm_base"
+        transform_stamped.header.frame_id = "link{}".format(i) if i > 0 else "base_link"
         transform_stamped.child_frame_id = "link{}".format(i + 1)
 
         # 提取平移和旋转
@@ -85,11 +85,11 @@ def publish_tf(arm, joints, time):
         # 发布变换
     tf_broadcaster.sendTransform(transform_stamped)
 
-    # 发布 dummy_link (MoveIt规划坐标系根节点) 到 arm_base 的变换
+    # 发布 dummy_link (MoveIt规划坐标系根节点) 到 base_link 的变换
     transform_stamped = TransformStamped()
     transform_stamped.header.stamp = time
     transform_stamped.header.frame_id = "dummy_link"
-    transform_stamped.child_frame_id = "arm_base"
+    transform_stamped.child_frame_id = "base_link"
 
     transform_stamped.transform.translation.x = 0
     transform_stamped.transform.translation.y = 0
@@ -115,9 +115,9 @@ def publish_tf(arm, joints, time):
     transform_stamped.transform.rotation.w = 1
     tf_broadcaster.sendTransform(transform_stamped)
 
-    # publish camera
+    # publish camera (RealSense 光学坐标系)
     transform_stamped.header.frame_id = "link6"
-    transform_stamped.child_frame_id = "camera"
+    transform_stamped.child_frame_id = "camera_color_optical_frame"
     transform_stamped.transform.translation.x = arm.link6_t_camera[0]
     transform_stamped.transform.translation.y = arm.link6_t_camera[1]
     transform_stamped.transform.translation.z = arm.link6_t_camera[2]
@@ -126,11 +126,11 @@ def publish_tf(arm, joints, time):
     transform_stamped.transform.rotation.z = arm.link6_q_camera[3]
     transform_stamped.transform.rotation.w = arm.link6_q_camera[0]
     # 发布变换
-    tf_broadcaster.sendTransform(transform_stamped)
+    tf_broadcaster_ros2.sendTransform(transform_stamped)
 
 
 
-def publish_sphere_marker(pub, point, frame_id="arm_base", color=(1.0, 0.0, 0.0, 1.0), radius=0.02):
+def publish_sphere_marker(pub, point, frame_id="base_link", color=(1.0, 0.0, 0.0, 1.0), radius=0.02):
     """
     发布三维点坐标的球形Marker
     参数:
@@ -178,14 +178,14 @@ def publish_sphere_marker(pub, point, frame_id="arm_base", color=(1.0, 0.0, 0.0,
 path = None
 if ROS1_AVAILABLE:
     path = Path()
-    path.header.frame_id = "arm_base"
+    path.header.frame_id = "base_link"
     path.poses = []
 
 def publish_trajectory(path_pub, position):
 
     pose_stamped = PoseStamped()
     pose_stamped.header.stamp = rospy.Time.now()
-    pose_stamped.header.frame_id = "arm_base"
+    pose_stamped.header.frame_id = "base_link"
 
     # 设置位置
     pose_stamped.pose.position.x = position[0]
@@ -215,7 +215,7 @@ def publish_target_point(pub, point, frame_id="camera"):
 # ROS2 版本函数
 # ========================================
 
-def publish_tf_ros2(node, arm, joints, time):
+def publish_tf_ros2(node, arm, joints, time, publish_camera=True):
     """
     发布所有关节的TF变换 - ROS2版本
     
@@ -224,6 +224,7 @@ def publish_tf_ros2(node, arm, joints, time):
         arm: PiperArm 实例
         joints: 关节角度列表
         time: builtin_interfaces.msg.Time
+        publish_camera: 是否发布相机TF (默认True，手眼标定时设为False)
     """
     try:
         import rclpy
@@ -247,7 +248,7 @@ def publish_tf_ros2(node, arm, joints, time):
         # 创建TF消息
         transform_stamped = TransformStamped()
         transform_stamped.header.stamp = time
-        transform_stamped.header.frame_id = "link{}".format(i) if i > 0 else "arm_base"
+        transform_stamped.header.frame_id = "link{}".format(i) if i > 0 else "base_link"
         transform_stamped.child_frame_id = "link{}".format(i + 1)
 
         # 提取平移和旋转
@@ -299,11 +300,11 @@ def publish_tf_ros2(node, arm, joints, time):
     transform_stamped.transform.rotation.w = 0.0
     tf_broadcaster.sendTransform(transform_stamped)
 
-    # 发布 dummy_link 到 arm_base
+    # 发布 dummy_link 到 base_link
     transform_stamped = TransformStamped()
     transform_stamped.header.stamp = time
     transform_stamped.header.frame_id = "dummy_link"
-    transform_stamped.child_frame_id = "arm_base"
+    transform_stamped.child_frame_id = "base_link"
 
     transform_stamped.transform.translation.x = 0.0
     transform_stamped.transform.translation.y = 0.0
@@ -329,20 +330,21 @@ def publish_tf_ros2(node, arm, joints, time):
     transform_stamped.transform.rotation.w = 1.0
     tf_broadcaster.sendTransform(transform_stamped)
 
-    # 发布相机变换
-    transform_stamped.header.frame_id = "link6"
-    transform_stamped.child_frame_id = "camera"
-    transform_stamped.transform.translation.x = arm.link6_t_camera[0]
-    transform_stamped.transform.translation.y = arm.link6_t_camera[1]
-    transform_stamped.transform.translation.z = arm.link6_t_camera[2]
-    transform_stamped.transform.rotation.x = arm.link6_q_camera[1]
-    transform_stamped.transform.rotation.y = arm.link6_q_camera[2]
-    transform_stamped.transform.rotation.z = arm.link6_q_camera[3]
-    transform_stamped.transform.rotation.w = arm.link6_q_camera[0]
-    tf_broadcaster.sendTransform(transform_stamped)
+    # 发布相机变换（仅在非标定模式下）
+    if publish_camera:
+        transform_stamped.header.frame_id = "link6"
+        transform_stamped.child_frame_id = "camera_color_optical_frame"
+        transform_stamped.transform.translation.x = arm.link6_t_camera[0]
+        transform_stamped.transform.translation.y = arm.link6_t_camera[1]
+        transform_stamped.transform.translation.z = arm.link6_t_camera[2]
+        transform_stamped.transform.rotation.x = arm.link6_q_camera[1]
+        transform_stamped.transform.rotation.y = arm.link6_q_camera[2]
+        transform_stamped.transform.rotation.z = arm.link6_q_camera[3]
+        transform_stamped.transform.rotation.w = arm.link6_q_camera[0]
+        tf_broadcaster.sendTransform(transform_stamped)
 
 
-def publish_sphere_marker_ros2(node, pub, point, frame_id="arm_base", color=(1.0, 0.0, 0.0, 1.0), radius=0.02):
+def publish_sphere_marker_ros2(node, pub, point, frame_id="base_link", color=(1.0, 0.0, 0.0, 1.0), radius=0.02):
     """
     发布三维点坐标的球形Marker - ROS2版本
     

@@ -593,7 +593,7 @@ class ButtonDetectorNode(Node):
         # 发布点坐标
         point_msg = PointStamped()
         point_msg.header.stamp = self.get_clock().now().to_msg()
-        point_msg.header.frame_id = "camera"
+        point_msg.header.frame_id = "camera_color_optical_frame"
         point_msg.point.x = center_3d[0]
         point_msg.point.y = center_3d[1]
         point_msg.point.z = center_3d[2]
@@ -606,7 +606,7 @@ class ButtonDetectorNode(Node):
         
         # 发布可视化Marker
         marker = Marker()
-        marker.header.frame_id = "camera"
+        marker.header.frame_id = "camera_color_optical_frame"
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "button_center"
         marker.id = 0
@@ -1172,7 +1172,7 @@ def main(args=None):
                         if base_3d is not None:
                             point_base_msg = PointStamped()
                             point_base_msg.header.stamp = node.get_clock().now().to_msg()
-                            point_base_msg.header.frame_id = "arm_base"
+                            point_base_msg.header.frame_id = "base_link"
                             point_base_msg.point.x = base_3d[0]
                             point_base_msg.point.y = base_3d[1]
                             point_base_msg.point.z = base_3d[2]

@@ -457,7 +457,7 @@ class VisionButtonActionNode(Node):
 
     def _publish_target_marker(self, target_xyz) -> None:
         marker = Marker()
-        marker.header.frame_id = "arm_base"
+        marker.header.frame_id = "base_link"
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "vision_button_target"
         marker.id = 0
